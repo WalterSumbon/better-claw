@@ -98,6 +98,19 @@ export async function sendToAgent(
     allowDangerouslySkipPermissions: config.permissionMode === 'bypassPermissions',
     mcpServers: {
       'better-claw': getMcpServer(),
+      // 动态挂载外部 MCP 扩展。
+      ...(config.mcpExtensions.playwright.enabled && {
+        'playwright': {
+          command: 'npx',
+          args: ['@playwright/mcp@latest'],
+        },
+      }),
+      ...(config.mcpExtensions.peekaboo.enabled && {
+        'peekaboo': {
+          command: 'npx',
+          args: ['-y', '@steipete/peekaboo'],
+        },
+      }),
     },
     allowedTools: [
       'mcp__better-claw__memory_read',

@@ -94,6 +94,20 @@ export const AppConfigSchema = z.object({
   agentCwd: z.string().optional(),
   /** 语音转文字配置（可选，不配置则语音消息仅保存文件）。 */
   speechToText: SpeechToTextConfigSchema.optional(),
+  /** 外部 MCP 扩展（浏览器控制、屏幕控制等）。 */
+  mcpExtensions: z.object({
+    /** Playwright MCP：浏览器自动化控制。 */
+    playwright: z.object({
+      enabled: z.boolean().default(false),
+    }).default({ enabled: false }),
+    /** Peekaboo MCP：macOS 屏幕截图与 GUI 自动化。 */
+    peekaboo: z.object({
+      enabled: z.boolean().default(false),
+    }).default({ enabled: false }),
+  }).default({
+    playwright: { enabled: false },
+    peekaboo: { enabled: false },
+  }),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

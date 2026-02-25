@@ -43,10 +43,11 @@ create a cron task with an appropriate schedule and prompt.`,
     schedule: z.string().describe('Cron expression (e.g., "0 9 * * *" for daily at 9 AM).'),
     description: z.string().describe('Human-readable description of what this task does.'),
     prompt: z.string().describe('The prompt to send to the agent when the task triggers.'),
+    once: z.boolean().optional().describe('If true, the task will auto-disable after executing once.'),
   },
   async (args) => {
     const userId = getCurrentUserId();
-    const task = createCronTask(userId, args.schedule, args.description, args.prompt);
+    const task = createCronTask(userId, args.schedule, args.description, args.prompt, args.once);
 
     if (!task) {
       return {
@@ -90,7 +91,7 @@ Returns task ID, schedule, description, enabled status, and creation time.`,
 
     const lines = tasks.map(
       (t) =>
-        `- [${t.enabled ? 'ON' : 'OFF'}] ${t.id}: "${t.description}" (${t.schedule})`,
+        `- [${t.enabled ? 'ON' : 'OFF'}]${t.once ? ' [ONCE]' : ''} ${t.id}: "${t.description}" (${t.schedule})`,
     );
 
     return {
@@ -116,6 +117,7 @@ Use cron_list first to find the task ID.`,
     description: z.string().optional().describe('New description.'),
     prompt: z.string().optional().describe('New prompt.'),
     enabled: z.boolean().optional().describe('Enable or disable the task.'),
+    once: z.boolean().optional().describe('If true, the task will auto-disable after executing once.'),
   },
   async (args) => {
     const userId = getCurrentUserId();

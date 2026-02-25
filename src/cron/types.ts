@@ -10,6 +10,8 @@ export interface CronTask {
   prompt: string;
   /** 是否启用。 */
   enabled: boolean;
+  /** 一次性任务标记。为 true 时执行一次后自动禁用。 */
+  once?: boolean;
   /** 创建时间（ISO 8601）。 */
   createdAt: string;
 }

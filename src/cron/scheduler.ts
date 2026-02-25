@@ -67,6 +67,12 @@ function scheduleJob(userId: string, task: CronTask): void {
     if (triggerHandler) {
       triggerHandler(userId, task);
     }
+
+    // 一次性任务：触发后自动禁用。
+    if (task.once) {
+      log.info({ userId, taskId: task.id }, 'Once task executed, auto-disabling');
+      updateCronTask(userId, task.id, { enabled: false });
+    }
   });
 
   activeJobs.set(task.id, job);
@@ -100,6 +106,7 @@ export function createCronTask(
   schedule: string,
   description: string,
   prompt: string,
+  once?: boolean,
 ): CronTask | null {
   if (!cron.validate(schedule)) {
     return null;
@@ -111,6 +118,7 @@ export function createCronTask(
     description,
     prompt,
     enabled: true,
+    once: once ?? false,
     createdAt: new Date().toISOString(),
   };
 
@@ -145,7 +153,7 @@ export function listCronTasks(userId: string): CronTask[] {
 export function updateCronTask(
   userId: string,
   taskId: string,
-  updates: Partial<Pick<CronTask, 'schedule' | 'description' | 'prompt' | 'enabled'>>,
+  updates: Partial<Pick<CronTask, 'schedule' | 'description' | 'prompt' | 'enabled' | 'once'>>,
 ): CronTask | null {
   const tasks = readCronTasks(userId);
   const idx = tasks.findIndex((t) => t.id === taskId);
