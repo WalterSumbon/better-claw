@@ -52,6 +52,19 @@ const MessagePushConfigSchema = z.object({
   pushToolCalls: z.boolean().default(false),
 });
 
+/** 会话管理配置。 */
+const SessionConfigSchema = z.object({
+  /** 时间间隔轮转阈值（小时），超过此间隔自动开新会话。 */
+  rotationTimeoutHours: z.number().default(4),
+  /** Context 占比轮转阈值（0-1），当前 context tokens 占模型最大 context window 的比例
+   *  超过此值时自动轮转。模型的 context window 大小从 SDK 自动获取。 */
+  rotationContextRatio: z.number().min(0).max(1).default(0.8),
+  /** 轮转时是否生成 AI 摘要。 */
+  summaryEnabled: z.boolean().default(true),
+  /** 摘要生成使用的模型（推荐使用较便宜的模型）。 */
+  summaryModel: z.string().default('claude-haiku-4-20250414'),
+});
+
 /** 语音转文字配置。 */
 const SpeechToTextConfigSchema = z.object({
   /** whisper 可执行文件路径。 */
@@ -94,7 +107,14 @@ export const AppConfigSchema = z.object({
   permissionMode: z
     .enum(['default', 'acceptEdits', 'bypassPermissions'])
     .default('bypassPermissions'),
-  /** Agent 文件操作的工作目录（可选）。 */
+  /** 会话管理配置。 */
+  session: SessionConfigSchema.default(() => ({
+    rotationTimeoutHours: 4,
+    rotationContextRatio: 0.8,
+    summaryEnabled: true,
+    summaryModel: 'claude-haiku-4-20250414',
+  })),
+  /** @deprecated 已改为 per-user workspace，此字段不再使用。 */
   agentCwd: z.string().optional(),
   /** 语音转文字配置（可选，不配置则语音消息仅保存文件）。 */
   speechToText: SpeechToTextConfigSchema.optional(),

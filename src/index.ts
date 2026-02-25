@@ -4,8 +4,9 @@ import { loadBindingCache, resolveUser, bindPlatform, createUser, getUser } from
 import { CLIAdapter } from './adapter/cli/adapter.js';
 import { enqueue, interrupt } from './core/queue.js';
 import { initScheduler, stopAllJobs } from './cron/scheduler.js';
-import { sendToAgent } from './core/agent.js';
+import { resetAgentSession } from './core/agent.js';
 import { agentContext } from './core/agent-context.js';
+import { rotateSession, getCurrentSessionInfo } from './core/session-manager.js';
 import type { InboundMessage } from './adapter/types.js';
 import type { MessageAdapter } from './adapter/interface.js';
 import type { CronTask } from './cron/types.js';
@@ -67,6 +68,28 @@ async function handleMessage(
         }
         return;
       }
+      case 'new': {
+        const userId = resolveUser(msg.platform, msg.platformUserId);
+        if (userId) {
+          log.info({ userId, platform: msg.platform }, 'New session requested via /new command');
+          const currentInfo = getCurrentSessionInfo(userId);
+          try {
+            const newSession = await rotateSession(userId, 'manual');
+            resetAgentSession(userId);
+            const oldInfo = currentInfo
+              ? ` Old session archived (${currentInfo.messageCount} messages).`
+              : '';
+            await adapter.sendText(
+              msg.platformUserId,
+              `🆕 New session started: ${newSession.localId}.${oldInfo}`,
+            );
+          } catch (err) {
+            log.error({ err, userId }, 'Failed to create new session');
+            await adapter.sendText(msg.platformUserId, 'Failed to create new session.');
+          }
+        }
+        return;
+      }
       default:
         // 未知命令作为普通消息处理。
         break;
@@ -97,12 +120,13 @@ async function handleMessage(
 }
 
 /**
- * 处理 cron 任务触发：发送 prompt 给 agent，将响应广播到用户所有已绑定平台。
+ * 处理 cron 任务触发：通过消息队列串行处理，避免并发冲突。
+ * 响应会广播到用户所有已绑定平台。
  *
  * @param userId - 用户 ID。
  * @param task - 触发的定时任务。
  */
-async function handleCronTrigger(userId: string, task: CronTask): Promise<void> {
+function handleCronTrigger(userId: string, task: CronTask): void {
   const log = getLogger();
   log.info({ userId, taskId: task.id, description: task.description }, 'Processing cron trigger');
 
@@ -112,7 +136,21 @@ async function handleCronTrigger(userId: string, task: CronTask): Promise<void> 
     return;
   }
 
-  // 构造广播文件发送回调。
+  // 构造广播回调：将回复文本发送到用户所有已绑定平台。
+  const broadcastText = async (text: string) => {
+    for (const binding of profile.bindings) {
+      const adapter = adapters.find((a) => a.platform === binding.platform);
+      if (adapter) {
+        await adapter.sendText(binding.platformUserId, text).catch((err) => {
+          log.error(
+            { err, platform: binding.platform, platformUserId: binding.platformUserId },
+            'Failed to broadcast cron reply',
+          );
+        });
+      }
+    }
+  };
+
   const broadcastFile = async (filePath: string, options?: Parameters<MessageAdapter['sendFile']>[2]) => {
     for (const binding of profile.bindings) {
       const adapter = adapters.find((a) => a.platform === binding.platform);
@@ -127,46 +165,15 @@ async function handleCronTrigger(userId: string, task: CronTask): Promise<void> 
     }
   };
 
-  // 收集 agent 的最终回复文本。
-  let replyText = '';
-
-  try {
-    const result = await sendToAgent(
-      userId,
-      task.prompt,
-      (msg) => {
-        if (msg.type === 'result' && 'result' in msg && typeof msg.result === 'string') {
-          replyText = msg.result;
-        }
-      },
-      broadcastFile,
-    );
-
-    // 如果 onMessage 没有捕获到 result 文本，从 result message 取。
-    if (!replyText && result.subtype === 'success' && typeof result.result === 'string') {
-      replyText = result.result;
-    }
-  } catch (err) {
-    log.error({ err, userId, taskId: task.id }, 'Cron agent execution failed');
-    replyText = `[Scheduled task "${task.description}" failed]`;
-  }
-
-  if (!replyText) {
-    return;
-  }
-
-  // 广播到用户所有已绑定平台。
-  for (const binding of profile.bindings) {
-    const adapter = adapters.find((a) => a.platform === binding.platform);
-    if (adapter) {
-      adapter.sendText(binding.platformUserId, replyText).catch((err) => {
-        log.error(
-          { err, platform: binding.platform, platformUserId: binding.platformUserId },
-          'Failed to broadcast cron reply',
-        );
-      });
-    }
-  }
+  // 通过队列串行处理，与用户消息共享同一队列，避免并发 agent 调用。
+  enqueue({
+    userId,
+    text: task.prompt,
+    reply: broadcastText,
+    sendFile: broadcastFile,
+    showTyping: () => {}, // cron 任务不需要 typing 状态。
+    platform: 'cron',
+  });
 }
 
 /**
@@ -215,9 +222,7 @@ async function main(): Promise<void> {
 
   // 7. 初始化定时任务调度器。
   initScheduler((userId: string, task: CronTask) => {
-    handleCronTrigger(userId, task).catch((err) => {
-      log.error({ err, userId, taskId: task.id }, 'Cron trigger handler error');
-    });
+    handleCronTrigger(userId, task);
   });
   log.info('Cron scheduler initialized');
 

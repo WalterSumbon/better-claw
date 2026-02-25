@@ -24,6 +24,19 @@ export function getUserDir(userId: string): string {
 }
 
 /**
+ * 获取指定用户的 workspace 目录（Agent 工作目录）。
+ * 自动确保目录存在。
+ *
+ * @param userId - 用户 ID。
+ * @returns workspace 目录的绝对路径。
+ */
+export function getUserWorkspacePath(userId: string): string {
+  const wsDir = join(getUserDir(userId), 'workspace');
+  ensureDir(wsDir);
+  return wsDir;
+}
+
+/**
  * 读取用户 profile。
  *
  * @param userId - 用户 ID。
@@ -42,6 +55,7 @@ export function writeProfile(profile: UserProfile): void {
   const dir = getUserDir(profile.userId);
   ensureDir(dir);
   ensureDir(join(dir, 'memory', 'extended'));
+  ensureDir(join(dir, 'workspace'));
   writeJsonFile(join(dir, 'profile.json'), profile);
 }
 

@@ -11,6 +11,11 @@ import {
   cronDeleteTool,
 } from '../cron/tools.js';
 import { sendFileTool, restartTool } from './tools.js';
+import {
+  sessionNewTool,
+  sessionListTool,
+  sessionInfoTool,
+} from '../core/session-tools.js';
 
 /**
  * 创建包含所有自定义工具的 MCP 服务器。
@@ -31,6 +36,9 @@ export function createAppMcpServer() {
       cronDeleteTool,
       sendFileTool,
       restartTool,
+      sessionNewTool,
+      sessionListTool,
+      sessionInfoTool,
     ],
   });
 }
