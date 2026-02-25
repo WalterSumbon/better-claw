@@ -4,6 +4,10 @@ import { z } from 'zod';
 const AnthropicConfigSchema = z.object({
   /** Anthropic API key（可选，agent-sdk 可复用 CLI 认证）。 */
   apiKey: z.string().optional(),
+  /** Anthropic Auth Token（用于代理服务器认证，对应 ANTHROPIC_AUTH_TOKEN）。 */
+  authToken: z.string().optional(),
+  /** Anthropic Base URL（用于代理服务器，对应 ANTHROPIC_BASE_URL）。 */
+  baseUrl: z.string().optional(),
   /** 默认模型 ID。 */
   model: z.string().default('claude-opus-4-6'),
   /** 单次查询最大预算（美元）。 */

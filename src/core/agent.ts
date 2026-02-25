@@ -91,11 +91,29 @@ export async function sendToAgent(
 
   const systemPrompt = buildSystemPrompt(userId);
 
+  // 构建传递给 SDK subprocess 的环境变量。
+  // 优先使用 config.yaml 中的配置，其次使用 process.env。
+  const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  // 从 config 注入认证相关环境变量（覆盖 process.env 中的值）。
+  if (config.anthropic.apiKey) {
+    sdkEnv.ANTHROPIC_API_KEY = config.anthropic.apiKey;
+  } else if (!sdkEnv.ANTHROPIC_API_KEY) {
+    // 空字符串会干扰 SDK 认证，删掉让它 fallback 到其他认证方式。
+    delete sdkEnv.ANTHROPIC_API_KEY;
+  }
+  if (config.anthropic.authToken) {
+    sdkEnv.ANTHROPIC_AUTH_TOKEN = config.anthropic.authToken;
+  }
+  if (config.anthropic.baseUrl) {
+    sdkEnv.ANTHROPIC_BASE_URL = config.anthropic.baseUrl;
+  }
+
   const options: Parameters<typeof query>[0]['options'] = {
     systemPrompt,
     model: config.anthropic.model,
     permissionMode: config.permissionMode as 'default' | 'acceptEdits' | 'bypassPermissions',
     allowDangerouslySkipPermissions: config.permissionMode === 'bypassPermissions',
+    env: sdkEnv,
     mcpServers: {
       'better-claw': getMcpServer(),
       // 动态挂载外部 MCP 扩展。
