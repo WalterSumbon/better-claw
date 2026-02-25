@@ -27,10 +27,26 @@ export function initScheduler(handler: CronTriggerHandler): void {
 
   const userIds = listUserIds();
   let totalScheduled = 0;
+  let totalCleaned = 0;
 
   for (const userId of userIds) {
     const tasks = readCronTasks(userId);
-    for (const task of tasks) {
+
+    // 清理已执行完的一次性任务。
+    const activeTasks = tasks.filter((t) => {
+      if (t.once && !t.enabled) {
+        totalCleaned++;
+        return false;
+      }
+      return true;
+    });
+
+    // 如果有清理，写回磁盘。
+    if (activeTasks.length < tasks.length) {
+      writeCronTasks(userId, activeTasks);
+    }
+
+    for (const task of activeTasks) {
       if (task.enabled) {
         scheduleJob(userId, task);
         totalScheduled++;
@@ -38,6 +54,9 @@ export function initScheduler(handler: CronTriggerHandler): void {
     }
   }
 
+  if (totalCleaned > 0) {
+    log.info({ totalCleaned }, 'Cleaned up completed once tasks');
+  }
   log.info({ totalScheduled }, 'Cron scheduler initialized');
 }
 
