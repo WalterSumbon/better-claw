@@ -1,0 +1,39 @@
+{
+  "name": "better-claw",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Agent framework built on Claude Agent SDK",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "dev:chat": "tsx src/cli.ts chat",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.56",
+    "commander": "^14.0.3",
+    "grammy": "^1.40.0",
+    "https-proxy-agent": "^7.0.6",
+    "nanoid": "^5.1.6",
+    "node-cron": "^4.2.1",
+    "pino": "^10.3.1",
+    "pino-pretty": "^13.1.3",
+    "pino-roll": "^4.0.0",
+    "yaml": "^2.8.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}

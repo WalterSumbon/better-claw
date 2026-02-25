@@ -1,0 +1,38 @@
+# Better-Claw 配置文件
+# 复制此文件到 data/config.yaml 并填入实际值。
+
+# Anthropic API 配置（agent-sdk 复用 CLI 认证，通常不需要配置 apiKey）。
+anthropic:
+  # apiKey: "sk-ant-your-api-key-here"
+  model: "claude-opus-4-6"
+  # maxBudgetUsd: 10.0
+
+# Telegram 机器人配置（可选，不配置则不启动 Telegram）。
+# telegram:
+#   botToken: "123456:ABC-DEF..."
+
+# 上下文管理配置。
+context:
+  compressionThresholdTokens: 80000
+  enableCompaction: true
+
+# 日志配置。
+logging:
+  level: "info"
+  directory: "data/logs"
+  maxSize: "10m"
+  maxFiles: 10
+
+# 消息推送配置。
+messagePush:
+  pushIntermediateMessages: true
+  pushToolCalls: false
+
+# 数据目录路径。
+dataDir: "data"
+
+# Agent 权限模式。
+permissionMode: "bypassPermissions"
+
+# Agent 文件操作的工作目录（可选）。
+# agentCwd: "/path/to/workspace"
