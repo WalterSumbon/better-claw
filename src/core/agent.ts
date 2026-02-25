@@ -188,8 +188,14 @@ export async function sendToAgent(
   // 同时跟踪最新的 input_tokens（反映当前 context 大小）。
   let lastInputTokens = 0;
 
-  const resultMessage = await agentContext.run({ userId, sendFile }, async () => {
-    const q = query({ prompt: message, options });
+  /**
+   * 执行一次 agent 查询，流式处理所有 SDK 消息。
+   *
+   * @param queryOptions - 传给 SDK query() 的选项。
+   * @returns 最终结果消息。
+   */
+  async function executeQuery(queryOptions: typeof options): Promise<SDKResultMessage> {
+    const q = query({ prompt: message, options: queryOptions });
     session.activeQuery = q;
 
     let result: SDKResultMessage | null = null;
@@ -250,6 +256,35 @@ export async function sendToAgent(
     }
 
     return result;
+  }
+
+  const resultMessage = await agentContext.run({ userId, sendFile }, async () => {
+    try {
+      return await executeQuery(options);
+    } catch (err) {
+      // 如果使用了 resume 且进程崩溃，清除 session ID 后重试（不 resume）。
+      if (options.resume) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        log.warn(
+          { userId, sdkSessionId: options.resume, error: errMsg },
+          'Agent query failed with resume, retrying without resume',
+        );
+
+        // 清除内存和持久化的 SDK session ID。
+        session.sdkSessionId = null;
+        const currentActive = readActiveSession(userId);
+        if (currentActive) {
+          currentActive.sdkSessionId = null;
+          currentActive.updatedAt = new Date().toISOString();
+          writeActiveSession(userId, currentActive);
+        }
+
+        const retryOptions = { ...options };
+        delete retryOptions.resume;
+        return await executeQuery(retryOptions);
+      }
+      throw err;
+    }
   });
 
   // ── 会话管理：更新对话记录和元数据 ──

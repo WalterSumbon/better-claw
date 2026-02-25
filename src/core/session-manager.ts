@@ -10,8 +10,12 @@ import {
   writeActiveSession,
   listArchivedSessions,
   conversationPath,
+  readCumulativeSummary,
+  writeCumulativeSummary,
+  sessionsDir,
   type SessionMetadata,
   type ConversationEntry,
+  type CumulativeSummary,
 } from './session-store.js';
 
 // ─── 轮转检查 ────────────────────────────────────────────────────────
@@ -118,6 +122,13 @@ export async function rotateSession(
       },
       'Session archived',
     );
+  }
+
+  // 将超出短期窗口的旧 session 浓缩到累积摘要。
+  try {
+    await consolidateOldSessions(userId);
+  } catch (err) {
+    log.error({ err, userId }, 'Failed to consolidate old sessions into cumulative summary');
   }
 
   // 清除活跃会话并创建新的。
@@ -244,10 +255,13 @@ export function getCurrentSessionInfo(userId: string): SessionMetadata | null {
  * @returns 格式化的会话历史文本。
  */
 export function getSessionHistoryForPrompt(userId: string): string {
+  const config = getConfig();
+  const maxRecent = config.session.maxRecentSessions;
   const archived = listArchivedSessions(userId);
   const current = readActiveSession(userId);
+  const cumulative = readCumulativeSummary(userId);
 
-  if (archived.length === 0 && !current) {
+  if (archived.length === 0 && !current && !cumulative) {
     return '';
   }
 
@@ -265,10 +279,10 @@ export function getSessionHistoryForPrompt(userId: string): string {
     lines.push('');
   }
 
-  // 最近的归档会话（最多显示 5 个）。
+  // 最近的归档会话（短期记忆，显示详细摘要）。
   if (archived.length > 0) {
-    lines.push(`### Previous Sessions (${archived.length} total)`);
-    const recentSessions = archived.slice(0, 5);
+    const recentSessions = archived.slice(0, maxRecent);
+    lines.push(`### Previous Sessions (${recentSessions.length} recent of ${archived.length} total)`);
     for (const s of recentSessions) {
       const timeRange = `${formatTime(s.createdAt)} → ${formatTime(s.endedAt!)}`;
       lines.push(`- **${s.localId}** (${timeRange}, ${s.messageCount} msgs)`);
@@ -277,12 +291,173 @@ export function getSessionHistoryForPrompt(userId: string): string {
       }
       lines.push(`  Conversation: ${conversationPath(userId, s.localId)}`);
     }
-    if (archived.length > 5) {
-      lines.push(`- ... and ${archived.length - 5} older sessions`);
-    }
+  }
+
+  // 累积摘要（长期记忆，覆盖更早的所有 session）。
+  if (cumulative?.text) {
+    lines.push('');
+    lines.push(`### Long-term Memory (condensed from ${cumulative.sessionCount} older sessions)`);
+    lines.push(cumulative.text);
+  }
+
+  // 如果有超出短期窗口的旧 session，提示 AI 可以去目录查找详细对话记录。
+  const olderCount = archived.length - Math.min(archived.length, maxRecent);
+  if (olderCount > 0) {
+    lines.push('');
+    lines.push(`> **Note**: ${olderCount} older session(s) are condensed in Long-term Memory above. If you need detailed conversation logs, read files from: \`${sessionsDir(userId)}/\` (each subfolder contains metadata.json and conversation.json).`);
   }
 
   return lines.join('\n');
+}
+
+// ─── 累积摘要浓缩 ────────────────────────────────────────────────────
+
+/**
+ * 将超出短期窗口的旧 session 摘要浓缩到累积摘要中。
+ *
+ * 仅在归档 session 数量超过 maxRecentSessions 时触发。
+ * 将最近 maxRecentSessions 个之外的 session 的摘要合并到累积摘要，
+ * 然后通过 AI 重新浓缩整体累积摘要，控制长度。
+ *
+ * @param userId - 用户 ID。
+ */
+async function consolidateOldSessions(userId: string): Promise<void> {
+  const log = getLogger();
+  const config = getConfig();
+  const maxRecent = config.session.maxRecentSessions;
+  const archived = listArchivedSessions(userId); // 按创建时间倒序
+
+  if (archived.length <= maxRecent) {
+    // 还没超出短期窗口，无需浓缩。
+    return;
+  }
+
+  // 超出短期窗口的旧 session（跳过最近 maxRecent 个）。
+  const oldSessions = archived.slice(maxRecent);
+
+  // 收集需要新浓缩的 session 摘要。
+  const existing = readCumulativeSummary(userId);
+  const existingSessionCount = existing?.sessionCount ?? 0;
+
+  // 只处理尚未被浓缩过的 session。
+  const newOldCount = oldSessions.length;
+  if (newOldCount <= existingSessionCount) {
+    // 没有新的旧 session 需要浓缩。
+    return;
+  }
+
+  // 收集新增的旧 session 摘要（已浓缩的之外的部分）。
+  // oldSessions 是按时间倒序的，取前面的（较新的）还没被浓缩的。
+  const newSessionsToMerge = oldSessions.slice(0, newOldCount - existingSessionCount);
+  const newSummaries = newSessionsToMerge
+    .filter((s) => s.summary && !s.summary.startsWith('[Summary generation failed]'))
+    .map((s) => {
+      const timeRange = `${formatTime(s.createdAt)} → ${formatTime(s.endedAt!)}`;
+      return `[${timeRange}] ${s.summary}`;
+    });
+
+  if (newSummaries.length === 0 && !existing?.text) {
+    // 没有可浓缩的内容。
+    writeCumulativeSummary(userId, {
+      text: '',
+      sessionCount: newOldCount,
+      updatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
+  // 构建输入：已有累积摘要 + 新增的 session 摘要。
+  const inputParts: string[] = [];
+  if (existing?.text) {
+    inputParts.push(`Existing cumulative summary:\n${existing.text}`);
+  }
+  if (newSummaries.length > 0) {
+    inputParts.push(`New session summaries to incorporate:\n${newSummaries.join('\n')}`);
+  }
+
+  // 调用 AI 浓缩。
+  const condensedText = await condenseCumulativeSummary(inputParts.join('\n\n'));
+
+  writeCumulativeSummary(userId, {
+    text: condensedText,
+    sessionCount: newOldCount,
+    updatedAt: new Date().toISOString(),
+  });
+
+  log.info(
+    {
+      userId,
+      totalOldSessions: newOldCount,
+      newlyMerged: newSessionsToMerge.length,
+      summaryLength: condensedText.length,
+    },
+    'Consolidated old sessions into cumulative summary',
+  );
+}
+
+/**
+ * 调用 Claude API 将多个 session 摘要浓缩为一段累积摘要。
+ *
+ * @param input - 包含已有累积摘要和新增摘要的文本。
+ * @returns 浓缩后的累积摘要文本。
+ */
+async function condenseCumulativeSummary(input: string): Promise<string> {
+  const config = getConfig();
+
+  const baseUrl = config.anthropic.baseUrl || 'https://api.anthropic.com';
+  const headers: Record<string, string> = {
+    'anthropic-version': '2023-06-01',
+    'content-type': 'application/json',
+  };
+
+  if (config.anthropic.authToken) {
+    headers['Authorization'] = `Bearer ${config.anthropic.authToken}`;
+  }
+  if (config.anthropic.apiKey) {
+    headers['x-api-key'] = config.anthropic.apiKey;
+  }
+
+  const body = {
+    model: config.session.summaryModel,
+    max_tokens: 1024,
+    messages: [
+      {
+        role: 'user',
+        content: `You are maintaining a long-term memory summary for a personal AI assistant. Below is the existing cumulative summary and/or new session summaries that need to be incorporated.
+
+Please produce a single, cohesive summary that:
+1. Preserves all important facts, decisions, preferences, and outcomes
+2. Removes redundant information
+3. Stays concise (aim for 3-8 sentences)
+4. Writes in the same language the user used (Chinese if the summaries are in Chinese)
+5. Organizes by topic/theme rather than chronologically when possible
+
+${input}`,
+      },
+    ],
+  };
+
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Cumulative summary API call failed (${response.status}): ${errorText}`);
+  }
+
+  const data = (await response.json()) as {
+    content?: Array<{ type: string; text?: string }>;
+  };
+
+  const text = data.content?.find((b) => b.type === 'text')?.text;
+  if (!text) {
+    throw new Error('Cumulative summary API returned no text content');
+  }
+
+  return text;
 }
 
 // ─── AI 摘要生成 ──────────────────────────────────────────────────────

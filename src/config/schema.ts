@@ -63,6 +63,9 @@ const SessionConfigSchema = z.object({
   summaryEnabled: z.boolean().default(true),
   /** 摘要生成使用的模型（推荐使用较便宜的模型）。 */
   summaryModel: z.string().default('claude-haiku-4-20250414'),
+  /** system prompt 中展示的最近 session 数量（短期记忆），更早的 session 会被
+   *  浓缩到累积摘要中（长期记忆）。 */
+  maxRecentSessions: z.number().min(1).default(3),
 });
 
 /** 语音转文字配置。 */
@@ -113,6 +116,7 @@ export const AppConfigSchema = z.object({
     rotationContextRatio: 0.8,
     summaryEnabled: true,
     summaryModel: 'claude-haiku-4-20250414',
+    maxRecentSessions: 3,
   })),
   /** @deprecated 已改为 per-user workspace，此字段不再使用。 */
   agentCwd: z.string().optional(),

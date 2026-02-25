@@ -62,7 +62,7 @@ function activeSessionPath(userId: string): string {
 }
 
 /** 获取用户 sessions 目录路径。 */
-function sessionsDir(userId: string): string {
+export function sessionsDir(userId: string): string {
   return join(getUserDir(userId), 'sessions');
 }
 
@@ -231,6 +231,43 @@ export function listArchivedSessions(userId: string): SessionMetadata[] {
   sessions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   return sessions;
+}
+
+// ─── 累积摘要（长期记忆）────────────────────────────────────────────
+
+/** 获取用户累积摘要文件路径。 */
+function cumulativeSummaryPath(userId: string): string {
+  return join(getUserDir(userId), 'cumulative-summary.json');
+}
+
+/** 累积摘要数据结构。 */
+export interface CumulativeSummary {
+  /** 摘要文本。 */
+  text: string;
+  /** 已被浓缩的 session 数量。 */
+  sessionCount: number;
+  /** 最后更新时间（ISO 8601）。 */
+  updatedAt: string;
+}
+
+/**
+ * 读取用户的累积摘要。
+ *
+ * @param userId - 用户 ID。
+ * @returns 累积摘要数据，不存在时返回 null。
+ */
+export function readCumulativeSummary(userId: string): CumulativeSummary | null {
+  return readJsonFile<CumulativeSummary>(cumulativeSummaryPath(userId));
+}
+
+/**
+ * 写入用户的累积摘要。
+ *
+ * @param userId - 用户 ID。
+ * @param summary - 累积摘要数据。
+ */
+export function writeCumulativeSummary(userId: string, summary: CumulativeSummary): void {
+  writeJsonFile(cumulativeSummaryPath(userId), summary);
 }
 
 // ─── 迁移工具 ────────────────────────────────────────────────────────
