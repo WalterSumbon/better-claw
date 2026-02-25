@@ -108,6 +108,7 @@ export async function sendToAgent(
       'mcp__better-claw__cron_update',
       'mcp__better-claw__cron_delete',
       'mcp__better-claw__send_file',
+      'mcp__better-claw__restart',
     ],
     includePartialMessages: true,
     maxBudgetUsd: config.anthropic.maxBudgetUsd,

@@ -5,6 +5,28 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { agentContext } from '../core/agent-context.js';
 import { getLogger } from '../logger/index.js';
 
+/** MCP 工具：restart。重启 Better-Claw 服务。 */
+export const restartTool = tool(
+  'restart',
+  `Restart the Better-Claw service process.
+
+Use this tool when you need to restart the service, for example after modifying code or configuration files.
+The process will gracefully shut down and the external process manager will restart it.
+A short delay is applied to ensure the current response is delivered before the process exits.`,
+  {},
+  async () => {
+    const log = getLogger();
+    log.info('Restart requested via MCP tool');
+    // 延迟退出，确保当前响应能送达用户。外层进程管理器负责重新拉起。
+    setTimeout(() => process.kill(process.pid, 'SIGTERM'), 1500);
+    return {
+      content: [
+        { type: 'text' as const, text: 'Service restart scheduled. The process will exit shortly and be restarted by the process manager.' },
+      ],
+    };
+  },
+);
+
 /** MCP 工具：send_file。向用户发送文件（图片、视频、音频、文档等）。 */
 export const sendFileTool = tool(
   'send_file',

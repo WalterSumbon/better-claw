@@ -52,8 +52,8 @@ const MessagePushConfigSchema = z.object({
 const SpeechToTextConfigSchema = z.object({
   /** whisper 可执行文件路径。 */
   whisperPath: z.string().default('whisper'),
-  /** whisper 模型文件路径。 */
-  modelPath: z.string(),
+  /** whisper 模型名称（如 tiny, base, small, medium, large）。 */
+  model: z.string().default('base'),
   /** 识别语言（如 zh, en, ja），留空则自动检测。 */
   language: z.string().optional(),
 });

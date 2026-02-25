@@ -10,7 +10,7 @@ import {
   cronUpdateTool,
   cronDeleteTool,
 } from '../cron/tools.js';
-import { sendFileTool } from './tools.js';
+import { sendFileTool, restartTool } from './tools.js';
 
 /**
  * 创建包含所有自定义工具的 MCP 服务器。
@@ -30,6 +30,7 @@ export function createAppMcpServer() {
       cronUpdateTool,
       cronDeleteTool,
       sendFileTool,
+      restartTool,
     ],
   });
 }

@@ -57,6 +57,16 @@ async function handleMessage(
         }
         return;
       }
+      case 'restart': {
+        const userId = resolveUser(msg.platform, msg.platformUserId);
+        if (userId) {
+          log.info({ userId, platform: msg.platform }, 'Restart requested via /restart command');
+          await adapter.sendText(msg.platformUserId, '🔄 Restarting...');
+          // 延迟退出，确保消息发送完成。外层进程管理器负责重新拉起。
+          setTimeout(() => process.kill(process.pid, 'SIGTERM'), 500);
+        }
+        return;
+      }
       default:
         // 未知命令作为普通消息处理。
         break;
