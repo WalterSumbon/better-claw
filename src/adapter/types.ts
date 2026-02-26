@@ -30,4 +30,6 @@ export interface InboundMessage {
   commandArgs?: string;
   /** 附件列表（图片、语音、文件等）。 */
   attachments?: Attachment[];
+  /** 确认消息已处理（ack）。用于 Telegram long polling 场景，确保 update 不会被重新投递。 */
+  ack?: () => Promise<void>;
 }

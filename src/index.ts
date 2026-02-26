@@ -106,6 +106,8 @@ async function handleMessage(
           log.info({ userId, platform: msg.platform }, 'Restart requested via /restart command');
           writeRestartMarker(userId, 'command');
           await adapter.sendText(msg.platformUserId, '🔄 Restarting...');
+          // 确认该消息已处理，防止 Telegram 重启后重新投递导致无限重启。
+          await msg.ack?.();
           // 延迟退出，确保消息发送完成。外层进程管理器负责重新拉起。
           setTimeout(() => process.kill(process.pid, 'SIGTERM'), 500);
         }

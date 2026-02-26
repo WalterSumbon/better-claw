@@ -142,6 +142,10 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand,
         commandName,
         commandArgs,
+        ack: async () => {
+          // 通过 getUpdates(offset) 确认该 update 已处理，防止重启后重新投递。
+          await this.bot.api.getUpdates({ offset: ctx.update.update_id + 1, limit: 1 });
+        },
       };
 
       try {
