@@ -15,6 +15,7 @@ import {
   sessionsDir,
   type SessionMetadata,
   type ConversationEntry,
+  type ConversationBlock,
   type CumulativeSummary,
 } from './session-store.js';
 
@@ -194,26 +195,34 @@ export function updateSessionAfterQuery(
     contextTokens?: number;
     contextWindowTokens?: number;
   },
+  blocks?: ConversationBlock[],
 ): void {
   const now = new Date().toISOString();
 
   // 追加对话记录到本次查询所属的会话。
+  const assistantEntry: ConversationEntry = {
+    timestamp: now,
+    role: 'assistant',
+    content: assistantResponse,
+    metadata: {
+      costUsd: resultMeta.costUsd,
+      turns: resultMeta.turns,
+      durationMs: resultMeta.durationMs,
+    },
+  };
+
+  // 附加完整交互块（如果有）。
+  if (blocks && blocks.length > 0) {
+    assistantEntry.blocks = blocks;
+  }
+
   const entries: ConversationEntry[] = [
     {
       timestamp: now,
       role: 'user',
       content: userMessage,
     },
-    {
-      timestamp: now,
-      role: 'assistant',
-      content: assistantResponse,
-      metadata: {
-        costUsd: resultMeta.costUsd,
-        turns: resultMeta.turns,
-        durationMs: resultMeta.durationMs,
-      },
-    },
+    assistantEntry,
   ];
   appendConversation(userId, localSessionId, entries);
 

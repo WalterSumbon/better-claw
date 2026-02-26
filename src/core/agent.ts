@@ -11,6 +11,7 @@ import { agentContext } from './agent-context.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { createAppMcpServer } from '../mcp/server.js';
 import { readActiveSession, writeActiveSession } from './session-store.js';
+import type { ConversationBlock } from './session-store.js';
 import {
   ensureActiveSession,
   updateSessionAfterQuery,
@@ -188,6 +189,9 @@ export async function sendToAgent(
   // 同时跟踪最新的 input_tokens（反映当前 context 大小）。
   let lastInputTokens = 0;
 
+  /** 采集到的完整交互块。 */
+  const collectedBlocks: ConversationBlock[] = [];
+
   /**
    * 执行一次 agent 查询，流式处理所有 SDK 消息。
    *
@@ -214,11 +218,63 @@ export async function sendToAgent(
           }
         }
 
-        // 从 assistant 消息中提取 input_tokens（= 当前 context 大小）。
+        // 从 assistant 消息中提取 input_tokens 和内容块。
         if (msg.type === 'assistant') {
-          const usage = (msg as { message?: { usage?: { input_tokens?: number } } }).message?.usage;
+          const assistantMsg = msg as { message?: { usage?: { input_tokens?: number }; content?: Array<{ type: string; text?: string; thinking?: string; name?: string; id?: string; input?: unknown }> } };
+          const usage = assistantMsg.message?.usage;
           if (usage?.input_tokens) {
             lastInputTokens = usage.input_tokens;
+          }
+
+          // 采集 assistant 内容块（thinking / text / tool_use）。
+          const contentBlocks = assistantMsg.message?.content;
+          if (contentBlocks) {
+            for (const block of contentBlocks) {
+              if (block.type === 'thinking' && block.thinking) {
+                collectedBlocks.push({ type: 'thinking', text: block.thinking });
+              } else if (block.type === 'text' && block.text) {
+                collectedBlocks.push({ type: 'text', text: block.text });
+              } else if (block.type === 'tool_use') {
+                collectedBlocks.push({
+                  type: 'tool_use',
+                  toolName: block.name,
+                  toolId: block.id,
+                  input: block.input,
+                });
+              }
+            }
+          }
+        }
+
+        // 从 user 消息中提取 tool_result（带 parent_tool_use_id 的是工具返回）。
+        if (msg.type === 'user') {
+          const userMsg = msg as { parent_tool_use_id?: string | null; message?: { content?: unknown } };
+          if (userMsg.parent_tool_use_id) {
+            // 提取 tool_result 内容文本。
+            let resultText = '';
+            const content = userMsg.message?.content;
+            if (Array.isArray(content)) {
+              for (const block of content as Array<{ type: string; content?: unknown; text?: string }>) {
+                if (block.type === 'tool_result') {
+                  // tool_result 的 content 可能是 string 或 content block 数组。
+                  const inner = block.content;
+                  if (typeof inner === 'string') {
+                    resultText += inner;
+                  } else if (Array.isArray(inner)) {
+                    for (const ib of inner as Array<{ type: string; text?: string }>) {
+                      if (ib.type === 'text' && ib.text) {
+                        resultText += ib.text;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            collectedBlocks.push({
+              type: 'tool_result',
+              toolId: userMsg.parent_tool_use_id,
+              text: resultText || '[no output]',
+            });
           }
         }
 
@@ -313,7 +369,7 @@ export async function sendToAgent(
     durationMs: resultMessage.duration_ms,
     contextTokens: lastInputTokens,
     contextWindowTokens,
-  });
+  }, collectedBlocks);
 
   log.info(
     {

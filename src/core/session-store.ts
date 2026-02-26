@@ -32,14 +32,30 @@ export interface SessionMetadata {
   summary?: string;
 }
 
+/** 对话内容块（assistant 消息的完整交互记录）。 */
+export interface ConversationBlock {
+  /** 块类型。 */
+  type: 'thinking' | 'text' | 'tool_use' | 'tool_result';
+  /** 文本内容（thinking / text / tool_result 类型）。 */
+  text?: string;
+  /** 工具名称（tool_use 类型）。 */
+  toolName?: string;
+  /** 工具调用 ID（tool_use / tool_result 类型）。 */
+  toolId?: string;
+  /** 工具输入参数（tool_use 类型）。 */
+  input?: unknown;
+}
+
 /** 对话记录条目。 */
 export interface ConversationEntry {
   /** 时间戳（ISO 8601）。 */
   timestamp: string;
   /** 角色。 */
   role: 'user' | 'assistant';
-  /** 消息内容。 */
+  /** 消息内容（精简文本）。 */
   content: string;
+  /** 完整交互块序列（按时序：thinking → text → tool_use → tool_result → ...）。仅 assistant 消息。 */
+  blocks?: ConversationBlock[];
   /** 附加元数据（仅 assistant 消息）。 */
   metadata?: {
     costUsd?: number;
