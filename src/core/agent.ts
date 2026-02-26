@@ -38,6 +38,18 @@ export class AgentInterruptedError extends Error {
   }
 }
 
+/** API 限额触发时抛出的错误，携带限额重置时间。 */
+export class RateLimitError extends Error {
+  /** 限额重置时间（Unix 毫秒时间戳），无法获取时为 null。 */
+  resetsAt: number | null;
+
+  constructor(resetsAt: number | null) {
+    super('Rate limit exceeded');
+    this.name = 'RateLimitError';
+    this.resetsAt = resetsAt;
+  }
+}
+
 /** 用户 ID → 会话状态映射。 */
 const sessions = new Map<string, AgentSession>();
 
@@ -205,8 +217,30 @@ export async function sendToAgent(
 
     let result: SDKResultMessage | null = null;
 
+    // Rate limit 检测状态。
+    let hitRateLimit = false;
+    let lastResetsAt: number | null = null;
+
     try {
       for await (const msg of q) {
+        // 捕获 rate_limit_event，记录最新的重置时间。
+        if ((msg as { type: string }).type === 'rate_limit_event') {
+          const rateLimitMsg = msg as { rate_limit_info?: { resetsAt?: number; status?: string } };
+          if (rateLimitMsg.rate_limit_info?.resetsAt) {
+            lastResetsAt = rateLimitMsg.rate_limit_info.resetsAt;
+          }
+          log.info(
+            { userId, rateLimitInfo: rateLimitMsg.rate_limit_info },
+            'Rate limit event received',
+          );
+        }
+
+        // 检测 assistant 消息的 rate_limit 错误标记。
+        if (msg.type === 'assistant' && (msg as { error?: string }).error === 'rate_limit') {
+          hitRateLimit = true;
+          log.warn({ userId, resetsAt: lastResetsAt }, 'Rate limit error detected in assistant message');
+        }
+
         // 捕获 session_id 并更新到活跃会话。
         if ('session_id' in msg && msg.session_id) {
           session.sdkSessionId = msg.session_id;
@@ -313,6 +347,11 @@ export async function sendToAgent(
         throw new AgentInterruptedError();
       }
       throw new Error('Agent query completed without result message');
+    }
+
+    // 如果检测到 rate limit 错误，抛出 RateLimitError 供上层处理。
+    if (hitRateLimit) {
+      throw new RateLimitError(lastResetsAt);
     }
 
     return result;
