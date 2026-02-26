@@ -30,6 +30,18 @@ export interface SessionMetadata {
   contextWindowTokens: number;
   /** 会话摘要（轮转时生成）。 */
   summary?: string;
+  /** 从上一个 session 携带过来的中间对话（仅在刚轮转后的首次查询中存在）。 */
+  carryover?: CarryoverEntry[];
+}
+
+/** 轮转时 carry over 的精简对话条目（仅用户文本 + agent 最终回复）。 */
+export interface CarryoverEntry {
+  /** 时间戳（ISO 8601）。 */
+  timestamp: string;
+  /** 角色。 */
+  role: 'user' | 'assistant';
+  /** 消息内容。 */
+  content: string;
 }
 
 /** 对话内容块（assistant 消息的完整交互记录）。 */

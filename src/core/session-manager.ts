@@ -16,8 +16,28 @@ import {
   type SessionMetadata,
   type ConversationEntry,
   type ConversationBlock,
+  type CarryoverEntry,
   type CumulativeSummary,
 } from './session-store.js';
+
+// ─── 后台轮转状态 ────────────────────────────────────────────────────
+
+/** 后台轮转准备状态。 */
+interface BackgroundRotation {
+  /** 当前状态：preparing=后台生成中，ready=已就绪待切换。 */
+  state: 'preparing' | 'ready';
+  /** 触发后台准备时的 messageCount（用于识别中间对话）。 */
+  triggerMessageCount: number;
+  /** 旧 session 的 localId（用于防护校验）。 */
+  oldLocalId: string;
+  /** 预生成的摘要文本。 */
+  summary?: string;
+  /** 后台任务 Promise（用于 force 时 await）。 */
+  promise: Promise<void>;
+}
+
+/** 每用户后台轮转状态（内存中，进程重启后丢失）。 */
+const bgRotations = new Map<string, BackgroundRotation>();
 
 // ─── 轮转检查 ────────────────────────────────────────────────────────
 
@@ -74,6 +94,10 @@ export async function rotateSession(
 ): Promise<SessionMetadata> {
   const log = getLogger();
   const config = getConfig();
+
+  // 取消任何进行中的后台轮转准备（手动轮转 / timeout 优先）。
+  bgRotations.delete(userId);
+
   const currentSession = readActiveSession(userId);
 
   if (currentSession && currentSession.sdkSessionId) {
@@ -144,10 +168,141 @@ export async function rotateSession(
   return newSession;
 }
 
+// ─── 后台轮转准备 ────────────────────────────────────────────────────
+
+/**
+ * 启动后台轮转准备（异步生成摘要 + 浓缩旧 session）。
+ *
+ * 此函数立即返回，不阻塞调用方。后台任务完成后将 state 标记为 'ready'。
+ *
+ * @param userId - 用户 ID。
+ * @param session - 当前活跃会话。
+ */
+function startBackgroundPrep(userId: string, session: SessionMetadata): void {
+  const log = getLogger();
+
+  log.info(
+    { userId, localId: session.localId, messageCount: session.messageCount },
+    'Starting background rotation prep',
+  );
+
+  const bg: BackgroundRotation = {
+    state: 'preparing',
+    triggerMessageCount: session.messageCount,
+    oldLocalId: session.localId,
+    promise: null!,  // 下面立即赋值。
+  };
+
+  bg.promise = (async () => {
+    try {
+      const config = getConfig();
+
+      // 生成摘要。
+      let summary: string | undefined;
+      if (config.session.summaryEnabled) {
+        const conversation = readConversation(userId, session.localId);
+        summary = await generateSummary(conversation);
+      }
+      bg.summary = summary;
+
+      // 预浓缩旧 session 到累积摘要。
+      await consolidateOldSessions(userId);
+
+      bg.state = 'ready';
+      log.info({ userId, localId: session.localId }, 'Background rotation prep ready');
+    } catch (err) {
+      log.error({ err, userId }, 'Background rotation prep failed, using fallback summary');
+      bg.summary = `[Summary generation failed] Session had ${session.messageCount} messages over ${session.totalTurns} turns.`;
+      bg.state = 'ready';  // 仍然标记 ready，使用 fallback 摘要。
+    }
+  })();
+
+  bgRotations.set(userId, bg);
+}
+
+/**
+ * 利用预生成的摘要瞬间完成会话切换。
+ *
+ * @param userId - 用户 ID。
+ * @param bg - 后台轮转状态（必须为 ready）。
+ * @returns 新会话的元数据。
+ */
+function performInstantSwitch(userId: string, bg: BackgroundRotation): SessionMetadata {
+  const log = getLogger();
+  const currentSession = readActiveSession(userId);
+
+  // 防护校验：确保 session 没有在后台期间被手动切换。
+  if (!currentSession || currentSession.localId !== bg.oldLocalId) {
+    log.warn(
+      { userId, expected: bg.oldLocalId, actual: currentSession?.localId },
+      'Session changed during background prep, skipping instant switch',
+    );
+    bgRotations.delete(userId);
+    return currentSession || createActiveSession(userId);
+  }
+
+  // 提取 carryover：触发点之后的中间对话（仅用户文本 + agent 最终回复）。
+  const allConversations = readConversation(userId, currentSession.localId);
+  // 每个 messageCount 对应 conversation.json 中的 2 个条目（user + assistant）。
+  const carryoverStartIdx = bg.triggerMessageCount * 2;
+  const intermediateEntries = allConversations.slice(carryoverStartIdx);
+  const carryover: CarryoverEntry[] = intermediateEntries
+    .filter((e) => e.role === 'user' || e.role === 'assistant')
+    .map((e) => ({ timestamp: e.timestamp, role: e.role, content: e.content }));
+
+  // 归档旧 session（使用预生成的摘要）。
+  const archivedMetadata: SessionMetadata = {
+    ...currentSession,
+    endedAt: new Date().toISOString(),
+    summary: bg.summary,
+  };
+  archiveSession(userId, archivedMetadata);
+
+  log.info(
+    {
+      userId,
+      localId: currentSession.localId,
+      summary: bg.summary?.slice(0, 100),
+    },
+    'Session archived (instant switch)',
+  );
+
+  // 创建新 session。
+  clearActiveSession(userId);
+  const newSession = createActiveSession(userId);
+
+  // 写入 carryover 到新 session metadata。
+  if (carryover.length > 0) {
+    newSession.carryover = carryover;
+    writeActiveSession(userId, newSession);
+  }
+
+  bgRotations.delete(userId);
+
+  log.info(
+    {
+      userId,
+      oldLocalId: bg.oldLocalId,
+      newLocalId: newSession.localId,
+      carryoverEntries: carryover.length,
+    },
+    'Instant session switch completed',
+  );
+
+  return newSession;
+}
+
 // ─── 会话生命周期 ────────────────────────────────────────────────────
 
 /**
- * 确保用户有一个活跃会话。如果需要轮转则先轮转。
+ * 确保用户有一个活跃会话。
+ *
+ * 实现三级轮转策略：
+ * 1. timeout：超时直接同步轮转。
+ * 2. softRatio（rotationContextRatio）：达到后在后台启动摘要生成，不阻塞。
+ * 3. forceRatio（rotationForceRatio）：兜底，同步等待后台完成或直接同步轮转。
+ *
+ * 后台准备期间队列正常消费（不阻塞）；force 时阻塞直到轮转完成。
  *
  * @param userId - 用户 ID。
  * @returns 活跃会话元数据和可选的轮转原因。
@@ -155,18 +310,82 @@ export async function rotateSession(
 export async function ensureActiveSession(
   userId: string,
 ): Promise<{ session: SessionMetadata; rotated: boolean; reason?: RotationReason }> {
-  // 检查是否需要轮转。
-  const rotationReason = checkRotationNeeded(userId);
-
-  if (rotationReason) {
-    const session = await rotateSession(userId, rotationReason);
-    return { session, rotated: true, reason: rotationReason };
-  }
+  const config = getConfig();
+  const log = getLogger();
 
   // 读取或创建活跃会话。
   let session = readActiveSession(userId);
   if (!session) {
     session = createActiveSession(userId);
+    return { session, rotated: false };
+  }
+
+  // 没有 SDK session 意味着还没发过消息，不需要轮转。
+  if (!session.sdkSessionId) {
+    return { session, rotated: false };
+  }
+
+  // ── 1. 检查 timeout ──
+  const lastActive = new Date(session.updatedAt).getTime();
+  const hoursSinceLastActive = (Date.now() - lastActive) / (1000 * 60 * 60);
+
+  if (hoursSinceLastActive >= config.session.rotationTimeoutHours) {
+    // Timeout 优先：如果有后台任务在跑，先 await 再做同步轮转。
+    const bg = bgRotations.get(userId);
+    if (bg) {
+      await bg.promise;
+      bgRotations.delete(userId);
+    }
+    const newSession = await rotateSession(userId, 'timeout');
+    return { session: newSession, rotated: true, reason: 'timeout' };
+  }
+
+  // ── 2. 检查 context 占比 ──
+  if (session.contextWindowTokens <= 0) {
+    return { session, rotated: false };
+  }
+
+  const contextRatio = session.contextTokens / session.contextWindowTokens;
+  const softRatio = config.session.rotationContextRatio;
+  const forceRatio = config.session.rotationForceRatio ?? 0.9;
+  const bg = bgRotations.get(userId);
+
+  // ── 2a. 后台已就绪 → 瞬间切换 ──
+  if (bg && bg.state === 'ready') {
+    const newSession = performInstantSwitch(userId, bg);
+    return { session: newSession, rotated: true, reason: 'max_context' };
+  }
+
+  // ── 2b. 后台准备中 ──
+  if (bg && bg.state === 'preparing') {
+    if (contextRatio >= forceRatio) {
+      // Force 阈值命中 → 同步等待后台完成，期间队列不消费后续消息。
+      log.info(
+        { userId, contextRatio: contextRatio.toFixed(3), forceRatio },
+        'Force rotation threshold hit, awaiting background prep',
+      );
+      await bg.promise;
+      const newSession = performInstantSwitch(userId, bg);
+      return { session: newSession, rotated: true, reason: 'max_context' };
+    }
+    // 尚未达到 force 阈值，继续使用旧 session。
+    return { session, rotated: false };
+  }
+
+  // ── 2c. 无后台任务（idle）──
+  if (contextRatio >= forceRatio) {
+    // 直接达到 force 阈值（不应常见） → 同步轮转。
+    log.warn(
+      { userId, contextRatio: contextRatio.toFixed(3), forceRatio },
+      'Force rotation without background prep (should not happen normally)',
+    );
+    const newSession = await rotateSession(userId, 'max_context');
+    return { session: newSession, rotated: true, reason: 'max_context' };
+  }
+
+  if (contextRatio >= softRatio) {
+    // 达到软阈值 → 启动后台准备，不阻塞当前消息。
+    startBackgroundPrep(userId, session);
     return { session, rotated: false };
   }
 
@@ -240,6 +459,10 @@ export function updateSessionAfterQuery(
     if (resultMeta.contextWindowTokens) {
       session.contextWindowTokens = resultMeta.contextWindowTokens;
     }
+    // 清除 carryover（仅在新 session 的首次查询后存在，避免后续查询重复注入）。
+    if (session.carryover) {
+      delete session.carryover;
+    }
     session.updatedAt = now;
     writeActiveSession(userId, session);
   }
@@ -286,6 +509,18 @@ export function getSessionHistoryForPrompt(userId: string): string {
     lines.push(`- Started: ${current.createdAt}`);
     lines.push(`- Messages: ${current.messageCount}, Context: ${current.contextTokens.toLocaleString()} tokens${contextPct}`);
     lines.push('');
+
+    // 渲染 carryover（上一个 session 轮转时的中间对话，仅在首次查询中存在）。
+    if (current.carryover && current.carryover.length > 0) {
+      lines.push('### Carried Over from Previous Session');
+      lines.push('The following recent conversations from the end of the previous session are provided for context continuity:');
+      lines.push('');
+      for (const entry of current.carryover) {
+        const label = entry.role === 'user' ? 'User' : 'Assistant';
+        lines.push(`**${label}**: ${entry.content}`);
+      }
+      lines.push('');
+    }
   }
 
   // 最近的归档会话（短期记忆，显示详细摘要）。

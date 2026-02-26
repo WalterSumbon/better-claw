@@ -56,9 +56,12 @@ const MessagePushConfigSchema = z.object({
 const SessionConfigSchema = z.object({
   /** 时间间隔轮转阈值（小时），超过此间隔自动开新会话。 */
   rotationTimeoutHours: z.number().default(4),
-  /** Context 占比轮转阈值（0-1），当前 context tokens 占模型最大 context window 的比例
-   *  超过此值时自动轮转。模型的 context window 大小从 SDK 自动获取。 */
+  /** Context 占比软轮转阈值（0-1），达到此值时在后台启动 summary 生成和会话浓缩，
+   *  但不阻塞当前消息处理。 */
   rotationContextRatio: z.number().min(0).max(1).default(0.8),
+  /** Context 占比强制轮转兜底阈值（0-1），超过此值时同步等待后台完成或直接同步轮转，
+   *  期间暂停队列消费。必须大于 rotationContextRatio。 */
+  rotationForceRatio: z.number().min(0).max(1).default(0.9),
   /** 轮转时是否生成 AI 摘要。 */
   summaryEnabled: z.boolean().default(true),
   /** 摘要生成使用的模型（推荐使用较便宜的模型）。 */
@@ -114,6 +117,7 @@ export const AppConfigSchema = z.object({
   session: SessionConfigSchema.default(() => ({
     rotationTimeoutHours: 4,
     rotationContextRatio: 0.8,
+    rotationForceRatio: 0.9,
     summaryEnabled: true,
     summaryModel: 'claude-haiku-4-20250414',
     maxRecentSessions: 3,
