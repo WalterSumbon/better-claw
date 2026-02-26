@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { agentContext } from '../core/agent-context.js';
 import { getLogger } from '../logger/index.js';
+import { writeRestartMarker } from '../core/restart-marker.js';
 
 /** MCP 工具：restart。重启 Better-Claw 服务。 */
 export const restartTool = tool(
@@ -12,16 +13,27 @@ export const restartTool = tool(
 
 Use this tool when you need to restart the service, for example after modifying code or configuration files.
 The process will gracefully shut down and the external process manager will restart it.
-A short delay is applied to ensure the current response is delivered before the process exits.`,
+A short delay is applied to ensure the current response is delivered before the process exits.
+
+After restart, the agent will automatically resume the conversation and notify the user that the restart is complete.`,
   {},
   async () => {
     const log = getLogger();
+    const store = agentContext.getStore();
+    const userId = store?.userId;
+
+    // 写入重启标记，以便服务重启后自动恢复对话。
+    if (userId) {
+      writeRestartMarker(userId, 'mcp_tool');
+      log.info({ userId }, 'Restart marker written');
+    }
+
     log.info('Restart requested via MCP tool');
     // 延迟退出，确保当前响应能送达用户。外层进程管理器负责重新拉起。
     setTimeout(() => process.kill(process.pid, 'SIGTERM'), 1500);
     return {
       content: [
-        { type: 'text' as const, text: 'Service restart scheduled. The process will exit shortly and be restarted by the process manager.' },
+        { type: 'text' as const, text: 'Service restart scheduled. The process will exit shortly and be restarted by the process manager. A restart marker has been written — the agent will auto-resume the conversation after restart.' },
       ],
     };
   },

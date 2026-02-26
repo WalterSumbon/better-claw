@@ -3,6 +3,7 @@ import { getLogger } from '../logger/index.js';
 import { readCronTasks, writeCronTasks } from './store.js';
 import { generateId } from '../utils/token.js';
 import { listUserIds } from '../user/store.js';
+import { DEFAULT_TIMEZONE } from './types.js';
 import type { CronTask } from './types.js';
 
 /** 回调类型：cron 任务触发时调用。 */
@@ -81,6 +82,7 @@ function scheduleJob(userId: string, task: CronTask): void {
     return;
   }
 
+  const timezone = task.timezone ?? DEFAULT_TIMEZONE;
   const job = cron.schedule(task.schedule, () => {
     log.info({ userId, taskId: task.id, description: task.description }, 'Cron task triggered');
     if (triggerHandler) {
@@ -92,7 +94,7 @@ function scheduleJob(userId: string, task: CronTask): void {
       log.info({ userId, taskId: task.id }, 'Once task executed, auto-disabling');
       updateCronTask(userId, task.id, { enabled: false });
     }
-  });
+  }, { timezone });
 
   activeJobs.set(task.id, job);
   log.debug({ taskId: task.id, schedule: task.schedule }, 'Cron job scheduled');
@@ -126,6 +128,7 @@ export function createCronTask(
   description: string,
   prompt: string,
   once?: boolean,
+  timezone?: string,
 ): CronTask | null {
   if (!cron.validate(schedule)) {
     return null;
@@ -134,6 +137,7 @@ export function createCronTask(
   const task: CronTask = {
     id: `cron_${generateId()}`,
     schedule,
+    timezone: timezone ?? DEFAULT_TIMEZONE,
     description,
     prompt,
     enabled: true,
@@ -172,7 +176,7 @@ export function listCronTasks(userId: string): CronTask[] {
 export function updateCronTask(
   userId: string,
   taskId: string,
-  updates: Partial<Pick<CronTask, 'schedule' | 'description' | 'prompt' | 'enabled' | 'once'>>,
+  updates: Partial<Pick<CronTask, 'schedule' | 'timezone' | 'description' | 'prompt' | 'enabled' | 'once'>>,
 ): CronTask | null {
   const tasks = readCronTasks(userId);
   const idx = tasks.findIndex((t) => t.id === taskId);

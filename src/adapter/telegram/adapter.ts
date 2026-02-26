@@ -662,6 +662,14 @@ export class TelegramAdapter implements MessageAdapter {
       log.error({ err: err.error }, 'grammy error');
     });
 
+    // 注册 Bot 命令菜单，让用户在输入框输入 / 时看到可用命令。
+    await this.bot.api.setMyCommands([
+      { command: 'new', description: '开始新会话（归档当前会话）' },
+      { command: 'stop', description: '中断当前 AI 响应' },
+      { command: 'restart', description: '重启服务' },
+      { command: 'bind', description: '绑定账号（/bind <token>）' },
+    ]);
+
     // 清除可能存在的 webhook，确保 long polling 正常工作。
     await this.bot.api.deleteWebhook({ drop_pending_updates: false });
 

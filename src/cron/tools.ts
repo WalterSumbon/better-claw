@@ -37,17 +37,22 @@ Examples:
 - "0 */2 * * *"   → every 2 hours
 - "0 0 1 * *"     → first day of every month at midnight
 
+IMPORTANT: The cron expression hours are interpreted in the specified timezone (default: Asia/Shanghai).
+Use the user's local time directly — no manual UTC conversion needed.
+For example, if the user wants 9:00 AM Beijing time, use "0 9 * * *".
+
 When the user says something like "remind me to drink water every morning at 9",
 create a cron task with an appropriate schedule and prompt.`,
   {
-    schedule: z.string().describe('Cron expression (e.g., "0 9 * * *" for daily at 9 AM).'),
+    schedule: z.string().describe('Cron expression (e.g., "0 9 * * *" for daily at 9 AM). Uses local time in the specified timezone.'),
     description: z.string().describe('Human-readable description of what this task does.'),
     prompt: z.string().describe('The prompt to send to the agent when the task triggers.'),
     once: z.boolean().optional().describe('If true, the task will auto-disable after executing once.'),
+    timezone: z.string().optional().describe('IANA timezone string (e.g., "Asia/Shanghai", "America/New_York", "Europe/London"). Defaults to "Asia/Shanghai" if not specified. Check user core memory for their preferred timezone.'),
   },
   async (args) => {
     const userId = getCurrentUserId();
-    const task = createCronTask(userId, args.schedule, args.description, args.prompt, args.once);
+    const task = createCronTask(userId, args.schedule, args.description, args.prompt, args.once, args.timezone);
 
     if (!task) {
       return {
@@ -64,7 +69,7 @@ create a cron task with an appropriate schedule and prompt.`,
       content: [
         {
           type: 'text' as const,
-          text: `Cron task created:\n  ID: ${task.id}\n  Schedule: ${task.schedule}\n  Description: ${task.description}`,
+          text: `Cron task created:\n  ID: ${task.id}\n  Schedule: ${task.schedule}\n  Timezone: ${task.timezone ?? 'Asia/Shanghai'}\n  Description: ${task.description}`,
         },
       ],
     };
@@ -91,7 +96,7 @@ Returns task ID, schedule, description, enabled status, and creation time.`,
 
     const lines = tasks.map(
       (t) =>
-        `- [${t.enabled ? 'ON' : 'OFF'}]${t.once ? ' [ONCE]' : ''} ${t.id}: "${t.description}" (${t.schedule})`,
+        `- [${t.enabled ? 'ON' : 'OFF'}]${t.once ? ' [ONCE]' : ''} ${t.id}: "${t.description}" (${t.schedule}, tz: ${t.timezone ?? 'Asia/Shanghai'})`,
     );
 
     return {
@@ -109,11 +114,12 @@ Returns task ID, schedule, description, enabled status, and creation time.`,
 export const cronUpdateTool = tool(
   'cron_update',
   `Update an existing scheduled (cron) task.
-You can modify the schedule, description, prompt, or enable/disable the task.
+You can modify the schedule, timezone, description, prompt, or enable/disable the task.
 Use cron_list first to find the task ID.`,
   {
     taskId: z.string().describe('The ID of the cron task to update.'),
     schedule: z.string().optional().describe('New cron expression.'),
+    timezone: z.string().optional().describe('New IANA timezone string (e.g., "Asia/Shanghai", "America/New_York").'),
     description: z.string().optional().describe('New description.'),
     prompt: z.string().optional().describe('New prompt.'),
     enabled: z.boolean().optional().describe('Enable or disable the task.'),
@@ -156,7 +162,7 @@ Use cron_list first to find the task ID.`,
       content: [
         {
           type: 'text' as const,
-          text: `Task updated:\n  ID: ${task.id}\n  Schedule: ${task.schedule}\n  Description: ${task.description}\n  Enabled: ${task.enabled}`,
+          text: `Task updated:\n  ID: ${task.id}\n  Schedule: ${task.schedule}\n  Timezone: ${task.timezone ?? 'Asia/Shanghai'}\n  Description: ${task.description}\n  Enabled: ${task.enabled}`,
         },
       ],
     };

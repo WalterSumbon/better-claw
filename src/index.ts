@@ -7,6 +7,7 @@ import { initScheduler, stopAllJobs } from './cron/scheduler.js';
 import { resetAgentSession } from './core/agent.js';
 import { agentContext } from './core/agent-context.js';
 import { rotateSession, getCurrentSessionInfo } from './core/session-manager.js';
+import { findPendingRestarts, deleteRestartMarker, writeRestartMarker } from './core/restart-marker.js';
 import type { InboundMessage } from './adapter/types.js';
 import type { MessageAdapter } from './adapter/interface.js';
 import type { CronTask } from './cron/types.js';
@@ -62,6 +63,7 @@ async function handleMessage(
         const userId = resolveUser(msg.platform, msg.platformUserId);
         if (userId) {
           log.info({ userId, platform: msg.platform }, 'Restart requested via /restart command');
+          writeRestartMarker(userId, 'command');
           await adapter.sendText(msg.platformUserId, '🔄 Restarting...');
           // 延迟退出，确保消息发送完成。外层进程管理器负责重新拉起。
           setTimeout(() => process.kill(process.pid, 'SIGTERM'), 500);
@@ -177,6 +179,79 @@ function handleCronTrigger(userId: string, task: CronTask): void {
 }
 
 /**
+ * 检查并处理重启后的对话恢复。
+ *
+ * 扫描所有用户的 restart-pending 标记，对有标记的用户自动入队一条
+ * 合成消息，让 agent 在已有的 session 上下文中告知用户重启已完成。
+ */
+function handlePostRestart(): void {
+  const log = getLogger();
+  const pending = findPendingRestarts();
+
+  if (pending.length === 0) {
+    return;
+  }
+
+  log.info({ count: pending.length }, 'Found pending restart markers, resuming conversations');
+
+  for (const { userId, marker } of pending) {
+    const profile = getUser(userId);
+    if (!profile) {
+      log.warn({ userId }, 'Post-restart: user not found, deleting marker');
+      deleteRestartMarker(userId);
+      continue;
+    }
+
+    // 构造广播回调（与 cron 触发相同逻辑）。
+    const broadcastText = async (text: string) => {
+      for (const binding of profile.bindings) {
+        const adapter = adapters.find((a) => a.platform === binding.platform);
+        if (adapter) {
+          await adapter.sendText(binding.platformUserId, text).catch((err) => {
+            log.error(
+              { err, platform: binding.platform, platformUserId: binding.platformUserId },
+              'Failed to broadcast post-restart reply',
+            );
+          });
+        }
+      }
+    };
+
+    const broadcastFile = async (filePath: string, options?: Parameters<MessageAdapter['sendFile']>[2]) => {
+      for (const binding of profile.bindings) {
+        const adapter = adapters.find((a) => a.platform === binding.platform);
+        if (adapter) {
+          await adapter.sendFile(binding.platformUserId, filePath, options).catch((err) => {
+            log.error(
+              { err, platform: binding.platform, platformUserId: binding.platformUserId },
+              'Failed to broadcast post-restart file',
+            );
+          });
+        }
+      }
+    };
+
+    // 根据触发来源生成不同的合成 prompt。
+    const prompt = marker.source === 'mcp_tool'
+      ? '服务已重启完成。请基于之前的对话上下文，简要告知用户重启结果（例如代码修改已生效），并继续完成之前未完成的对话。请用简洁的语言回复。'
+      : '服务已通过 /restart 命令重启完成。请简要告知用户重启成功。';
+
+    enqueue({
+      userId,
+      text: prompt,
+      reply: broadcastText,
+      sendFile: broadcastFile,
+      showTyping: () => {},
+      platform: 'system',
+    });
+
+    // 删除标记，避免重复触发。
+    deleteRestartMarker(userId);
+    log.info({ userId, source: marker.source }, 'Post-restart conversation resumed');
+  }
+}
+
+/**
  * 启动应用。
  */
 async function main(): Promise<void> {
@@ -226,7 +301,10 @@ async function main(): Promise<void> {
   });
   log.info('Cron scheduler initialized');
 
-  // 8. 优雅关闭。
+  // 8. 重启后自动恢复对话。
+  handlePostRestart();
+
+  // 9. 优雅关闭。
   const shutdown = async () => {
     log.info('Shutting down...');
     stopAllJobs();
