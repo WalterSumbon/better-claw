@@ -26,6 +26,16 @@ interface AgentSession {
   sdkSessionId: string | null;
   /** 当前活跃的 Query 实例。 */
   activeQuery: Query | null;
+  /** 当前查询是否被用户主动中断（/stop）。 */
+  interrupted: boolean;
+}
+
+/** 用户通过 /stop 主动中断时抛出的错误。 */
+export class AgentInterruptedError extends Error {
+  constructor() {
+    super('Agent interrupted by user');
+    this.name = 'AgentInterruptedError';
+  }
 }
 
 /** 用户 ID → 会话状态映射。 */
@@ -61,6 +71,7 @@ function getSession(userId: string): AgentSession {
       localSessionId: persisted?.localId ?? null,
       sdkSessionId: persisted?.sdkSessionId ?? null,
       activeQuery: null,
+      interrupted: false,
     };
     sessions.set(userId, session);
   }
@@ -119,6 +130,9 @@ export async function sendToAgent(
   if (rotated) {
     session.sdkSessionId = null;
   }
+
+  // 重置中断标志。
+  session.interrupted = false;
 
   log.info({ userId, messageLength: message.length }, 'Sending message to agent');
 
@@ -308,6 +322,9 @@ export async function sendToAgent(
     }
 
     if (!result) {
+      if (session.interrupted) {
+        throw new AgentInterruptedError();
+      }
       throw new Error('Agent query completed without result message');
     }
 
@@ -318,6 +335,10 @@ export async function sendToAgent(
     try {
       return await executeQuery(options);
     } catch (err) {
+      // 用户主动中断，不重试。
+      if (err instanceof AgentInterruptedError) {
+        throw err;
+      }
       // 如果使用了 resume 且进程崩溃，清除 session ID 后重试（不 resume）。
       if (options.resume) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -396,6 +417,7 @@ export async function interruptAgent(userId: string): Promise<void> {
   if (session.activeQuery) {
     const log = getLogger();
     log.info({ userId }, 'Interrupting agent');
+    session.interrupted = true;
     await session.activeQuery.interrupt();
   }
 }

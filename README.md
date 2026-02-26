@@ -60,20 +60,50 @@ npx tsx src/index.ts --data-dir /path/to/my-agent
 | `session.rotationTimeoutHours` | 超过此小时数自动开新会话 |
 | `mcpExtensions` | 启用 Playwright / Peekaboo 等外部 MCP 工具 |
 
+## 对话命令
+
+在 Telegram 或 CLI 对话中可使用以下命令：
+
+| 命令 | 说明 |
+|------|------|
+| `/bind <token>` | 绑定账号，将当前平台用户关联到系统用户 |
+| `/stop` | 中断当前正在执行的 AI 响应，队列中的后续消息不受影响 |
+| `/new` | 归档当前会话并开始一个全新会话 |
+| `/restart` | 重启整个服务进程（由外层进程管理器重新拉起） |
+
 ## CLI 工具
 
+所有子命令都支持 `--data-dir`（简写 `-d`）指定数据目录。
+
+### 用户管理
+
+使用前需要先通过 CLI 创建用户，然后在对话中用 `/bind` 绑定平台账号：
+
 ```bash
-# 用户管理。
+# 1. 创建用户，会输出用户 ID 和 token。
 npx tsx src/cli.ts user create -n "Alice"
-npx tsx src/cli.ts user list
-npx tsx src/cli.ts user info <userId>
+# 输出：
+#   ID:    <userId>
+#   Name:  Alice
+#   Token: <token>
+#   Use this token to bind platform accounts via /bind <token>
+
+# 2. 在 Telegram 对话中发送 /bind <token> 完成绑定。
+#    也可通过 CLI 直接绑定：
 npx tsx src/cli.ts user bind -t <token> -p telegram -u <telegramUserId>
 
-# 交互式 CLI 对话（开发调试用）。
-npx tsx src/cli.ts chat
+# 查看所有用户。
+npx tsx src/cli.ts user list
 
-# 所有子命令也支持 --data-dir。
-npx tsx src/cli.ts -d /path/to/agent user list
+# 查看用户详情。
+npx tsx src/cli.ts user info <userId>
+```
+
+### 交互式对话
+
+```bash
+# CLI 对话模式（开发调试用）。
+npx tsx src/cli.ts chat
 ```
 
 ## 开发

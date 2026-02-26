@@ -2,7 +2,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { getLogger } from '../logger/index.js';
 import { getConfig } from '../config/index.js';
 import type { SendFileOptions } from '../adapter/interface.js';
-import { sendToAgent, interruptAgent } from './agent.js';
+import { sendToAgent, interruptAgent, AgentInterruptedError } from './agent.js';
 
 /** 队列中的消息。 */
 export interface QueuedMessage {
@@ -120,8 +120,12 @@ async function processMessage(message: QueuedMessage): Promise<void> {
       message.sendFile,
     );
   } catch (err) {
-    log.error({ err, userId: message.userId }, 'Agent execution failed');
-    await Promise.resolve(message.reply('An error occurred while processing your message. Please try again.')).catch(() => {});
+    if (err instanceof AgentInterruptedError) {
+      log.info({ userId: message.userId }, 'Agent interrupted by user');
+    } else {
+      log.error({ err, userId: message.userId }, 'Agent execution failed');
+      await Promise.resolve(message.reply('An error occurred while processing your message. Please try again.')).catch(() => {});
+    }
   } finally {
     clearInterval(typingInterval);
   }
@@ -180,17 +184,15 @@ export function enqueue(message: QueuedMessage): void {
 }
 
 /**
- * 中断指定用户的当前 agent 执行并清空队列。
+ * 中断指定用户当前正在执行的 agent 查询。
+ *
+ * 仅中断当前任务，不影响队列中排队的后续消息。
  *
  * @param userId - 用户 ID。
  */
 export async function interrupt(userId: string): Promise<void> {
   const log = getLogger();
-  log.info({ userId }, 'Interrupting user queue');
+  log.info({ userId }, 'Interrupting current agent execution');
 
-  // 清空队列。
-  queues.set(userId, []);
-
-  // 中断 agent。
   await interruptAgent(userId);
 }
