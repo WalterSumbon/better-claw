@@ -1,6 +1,10 @@
 # Better-Claw
 
-基于 [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk) 的个人 Agent 框架，支持 Telegram / CLI 多平台接入、长期记忆、定时任务和多用户管理。
+### Turn your Claude Code into a ClawdBot.
+
+把你本地的 Claude Code 变成一个随时在线的私人 AI 助手 —— 通过 Telegram 对话、语音消息与它交互，它拥有和你桌面 Claude Code 完全相同的能力：MCP 工具、Skills、文件操作、Shell 命令，外加长期记忆和定时任务。
+
+基于 [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk) 构建，支持 Telegram / CLI 多平台接入和多用户管理。
 
 ## 前置依赖
 
@@ -58,7 +62,6 @@ npx tsx src/index.ts --data-dir /path/to/my-agent
 | `telegram.botToken` | 不配置则不启动 Telegram 适配器 |
 | `logging.directory` | 相对路径基于 dataDir 解析，默认 `logs` |
 | `session.rotationTimeoutHours` | 超过此小时数自动开新会话 |
-| `mcpExtensions` | 启用 Playwright / Peekaboo 等外部 MCP 工具 |
 
 ## 对话命令
 

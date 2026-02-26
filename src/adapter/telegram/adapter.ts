@@ -239,7 +239,7 @@ export class TelegramAdapter implements MessageAdapter {
       if (transcript) {
         textParts.push(`[用户发送了语音消息，转录文本: ${transcript}]`);
       } else {
-        textParts.push(`[用户发送了语音消息: ${localPath}]（语音转文字不可用）`);
+        textParts.push(`[用户发送了语音消息: ${localPath}]（自动语音转文字不可用，请使用可用的语音转录工具或 skill 来处理该音频文件）`);
       }
 
       const msg: InboundMessage = {

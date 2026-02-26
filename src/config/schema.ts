@@ -22,14 +22,6 @@ const TelegramConfigSchema = z.object({
   proxy: z.string().optional(),
 });
 
-/** 上下文管理配置。 */
-const ContextConfigSchema = z.object({
-  /** 触发应用层压缩的 token 阈值。 */
-  compressionThresholdTokens: z.number().default(80000),
-  /** 是否启用 Claude API Compaction beta。 */
-  enableCompaction: z.boolean().default(true),
-});
-
 /** 日志配置。 */
 const LoggingConfigSchema = z.object({
   /** 日志级别。 */
@@ -48,8 +40,6 @@ const LoggingConfigSchema = z.object({
 const MessagePushConfigSchema = z.object({
   /** 是否推送 assistant 中间文本消息。 */
   pushIntermediateMessages: z.boolean().default(true),
-  /** 是否推送工具调用状态。 */
-  pushToolCalls: z.boolean().default(false),
 });
 
 /** 会话管理配置。 */
@@ -89,11 +79,6 @@ export const AppConfigSchema = z.object({
   })),
   /** Telegram 配置（可选，不配置则不启动 Telegram 适配器）。 */
   telegram: TelegramConfigSchema.optional(),
-  /** 上下文管理配置。 */
-  context: ContextConfigSchema.default(() => ({
-    compressionThresholdTokens: 80000,
-    enableCompaction: true,
-  })),
   /** 日志配置。 */
   logging: LoggingConfigSchema.default(() => ({
     level: 'info' as const,
@@ -105,7 +90,6 @@ export const AppConfigSchema = z.object({
   /** 消息推送粒度配置。 */
   messagePush: MessagePushConfigSchema.default(() => ({
     pushIntermediateMessages: true,
-    pushToolCalls: false,
   })),
   /** 数据目录路径。 */
   dataDir: z.string().default('data'),
@@ -122,24 +106,8 @@ export const AppConfigSchema = z.object({
     summaryModel: 'claude-haiku-4-20250414',
     maxRecentSessions: 3,
   })),
-  /** @deprecated 已改为 per-user workspace，此字段不再使用。 */
-  agentCwd: z.string().optional(),
-  /** 语音转文字配置（可选，不配置则语音消息仅保存文件）。 */
+  /** 语音转文字配置（可选，不配置则语音消息仅保存文件，由 agent 自行决定如何处理）。 */
   speechToText: SpeechToTextConfigSchema.optional(),
-  /** 外部 MCP 扩展（浏览器控制、屏幕控制等）。 */
-  mcpExtensions: z.object({
-    /** Playwright MCP：浏览器自动化控制。 */
-    playwright: z.object({
-      enabled: z.boolean().default(false),
-    }).default({ enabled: false }),
-    /** Peekaboo MCP：macOS 屏幕截图与 GUI 自动化。 */
-    peekaboo: z.object({
-      enabled: z.boolean().default(false),
-    }).default({ enabled: false }),
-  }).default({
-    playwright: { enabled: false },
-    peekaboo: { enabled: false },
-  }),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

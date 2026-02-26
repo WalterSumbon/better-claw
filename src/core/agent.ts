@@ -160,19 +160,6 @@ export async function sendToAgent(
     env: sdkEnv,
     mcpServers: {
       'better-claw': getMcpServer(),
-      // 动态挂载外部 MCP 扩展。
-      ...(config.mcpExtensions.playwright.enabled && {
-        'playwright': {
-          command: 'npx',
-          args: ['@playwright/mcp@latest'],
-        },
-      }),
-      ...(config.mcpExtensions.peekaboo.enabled && {
-        'peekaboo': {
-          command: 'npx',
-          args: ['-y', '@steipete/peekaboo'],
-        },
-      }),
     },
     allowedTools: [
       'mcp__better-claw__memory_read',
