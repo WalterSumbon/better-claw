@@ -1,15 +1,18 @@
-# Better-Claw 配置文件
-# 复制此文件到 data/config.yaml 并填入实际值。
+# Better-Claw 配置文件（所有字段都有默认值，最小配置为空文件）。
+# 复制此文件到 <data-dir>/config.yaml 并填入实际值。
 
-# Anthropic API 配置（agent-sdk 复用 CLI 认证，通常不需要配置 apiKey）。
+# Anthropic API 配置（agent-sdk 可复用 CLI 认证，通常不需要配置 apiKey）。
 anthropic:
   # apiKey: "sk-ant-your-api-key-here"
+  # authToken: "your-auth-token-here"
+  # baseUrl: "https://api.anthropic.com"
   model: "claude-opus-4-6"
   # maxBudgetUsd: 10.0
 
 # Telegram 机器人配置（可选，不配置则不启动 Telegram）。
 # telegram:
-#   botToken: "123456:ABC-DEF..."
+#   botToken: "123456789:AABBccDDeeFFggHHiiJJkkLLmmNNooPPqqR"
+#   proxy: "http://127.0.0.1:7890"
 
 # 上下文管理配置。
 context:
@@ -19,20 +22,50 @@ context:
 # 日志配置。
 logging:
   level: "info"
-  directory: "data/logs"
+  # 日志目录，相对路径基于 dataDir 解析。
+  directory: "logs"
+  # 单个日志文件最大体积（pino-roll 格式：数字 + k/m/g）。
   maxSize: "10m"
   maxFiles: 10
+  replyLogMaxLength: 200
 
-# 消息推送配置。
+# 消息推送粒度配置。
 messagePush:
   pushIntermediateMessages: true
   pushToolCalls: false
 
-# 数据目录路径。
+# 数据目录路径（CLI --data-dir 参数优先级更高）。
 dataDir: "data"
 
-# Agent 权限模式。
+# Agent 权限模式：default / acceptEdits / bypassPermissions。
 permissionMode: "bypassPermissions"
 
-# Agent 文件操作的工作目录（可选）。
-# agentCwd: "/path/to/workspace"
+# 会话管理配置。
+session:
+  # 时间间隔轮转阈值（小时），超过此间隔自动开新会话。
+  rotationTimeoutHours: 4
+  # Context 占比软轮转阈值（0-1）。
+  rotationContextRatio: 0.8
+  # Context 占比强制轮转阈值（0-1），必须大于 rotationContextRatio。
+  rotationForceRatio: 0.9
+  # 轮转时是否生成 AI 摘要。
+  summaryEnabled: true
+  # 摘要生成使用的模型（推荐使用较便宜的模型）。
+  summaryModel: "claude-haiku-4-20250414"
+  # system prompt 中展示的最近 session 数量。
+  maxRecentSessions: 3
+
+# 语音转文字配置（可选，不配置则语音消息仅保存文件）。
+# speechToText:
+#   whisperPath: "whisper"
+#   model: "base"
+#   language: "zh"
+
+# 外部 MCP 扩展。
+mcpExtensions:
+  # Playwright MCP：浏览器自动化控制。
+  playwright:
+    enabled: false
+  # Peekaboo MCP：macOS 屏幕截图与 GUI 自动化。
+  peekaboo:
+    enabled: false

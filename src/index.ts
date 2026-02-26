@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, copyFileSync } from 'fs';
+import { resolve } from 'path';
 import { loadConfig } from './config/index.js';
 import { createLogger, getLogger } from './logger/index.js';
 import { loadBindingCache, resolveUser, bindPlatform, createUser, getUser } from './user/manager.js';
@@ -11,6 +13,45 @@ import { findPendingRestarts, deleteRestartMarker, writeRestartMarker } from './
 import type { InboundMessage } from './adapter/types.js';
 import type { MessageAdapter } from './adapter/interface.js';
 import type { CronTask } from './cron/types.js';
+
+/**
+ * 从 process.argv 解析 --data-dir 参数。
+ *
+ * @returns 用户指定的数据目录路径，未指定时返回 undefined。
+ */
+function parseDataDir(): string | undefined {
+  const idx = process.argv.indexOf('--data-dir');
+  if (idx === -1 || idx + 1 >= process.argv.length) {
+    return undefined;
+  }
+  return process.argv[idx + 1];
+}
+
+/**
+ * 确保数据目录就绪。若目录不存在，自动创建并复制 config.example.yaml 作为初始配置。
+ *
+ * @param dataDir - 数据目录路径。
+ * @returns 如果是新创建的目录返回 true，已存在返回 false。
+ */
+function ensureDataDir(dataDir: string): boolean {
+  const absDir = resolve(process.cwd(), dataDir);
+  const configPath = resolve(absDir, 'config.yaml');
+
+  if (existsSync(configPath)) {
+    return false;
+  }
+
+  // 创建目录。
+  mkdirSync(absDir, { recursive: true });
+
+  // 复制 config.example.yaml 作为初始配置。
+  const examplePath = resolve(process.cwd(), 'config.example.yaml');
+  if (existsSync(examplePath)) {
+    copyFileSync(examplePath, configPath);
+  }
+
+  return true;
+}
 
 /** 所有已启动的适配器。 */
 const adapters: MessageAdapter[] = [];
@@ -255,8 +296,21 @@ function handlePostRestart(): void {
  * 启动应用。
  */
 async function main(): Promise<void> {
+  // 0. 解析 --data-dir 参数。
+  const dataDir = parseDataDir();
+  const effectiveDataDir = dataDir ?? 'data';
+
+  // 0.1 确保数据目录就绪。
+  const isNew = ensureDataDir(effectiveDataDir);
+  if (isNew) {
+    const absDir = resolve(process.cwd(), effectiveDataDir);
+    console.log(`[Better-Claw] Initialized new data directory: ${absDir}`);
+    console.log(`[Better-Claw] Please edit ${absDir}/config.yaml and restart.`);
+    process.exit(0);
+  }
+
   // 1. 加载配置。
-  const config = loadConfig();
+  const config = loadConfig({ dataDir });
 
   // 2. 初始化日志。
   createLogger(config.logging);

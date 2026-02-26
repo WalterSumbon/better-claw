@@ -14,9 +14,11 @@ import type { PlatformType } from './user/types.js';
 
 /**
  * 初始化运行环境（配置 + 日志 + 绑定缓存）。
+ *
+ * @param dataDir - CLI 指定的数据目录，优先于 yaml 配置。
  */
-function initEnv(): void {
-  const config = loadConfig();
+function initEnv(dataDir?: string): void {
+  const config = loadConfig({ dataDir });
   createLogger(config.logging);
   loadBindingCache();
 }
@@ -26,7 +28,8 @@ const program = new Command();
 program
   .name('better-claw')
   .description('Better-Claw CLI management tool')
-  .version('0.1.0');
+  .version('0.1.0')
+  .option('-d, --data-dir <path>', 'Data directory path (agent instance root)');
 
 // --- user 子命令组 ---
 
@@ -37,7 +40,7 @@ userCmd
   .description('Create a new user')
   .requiredOption('-n, --name <name>', 'Display name for the user')
   .action((opts: { name: string }) => {
-    initEnv();
+    initEnv(program.opts().dataDir);
     const profile = createUser(opts.name);
     console.log('User created:');
     console.log(`  ID:    ${profile.userId}`);
@@ -50,7 +53,7 @@ userCmd
   .command('list')
   .description('List all users')
   .action(() => {
-    initEnv();
+    initEnv(program.opts().dataDir);
     const users = listUsers();
     if (users.length === 0) {
       console.log('No users found.');
@@ -67,7 +70,7 @@ userCmd
   .description('Show details of a user')
   .argument('<userId>', 'User ID')
   .action((userId: string) => {
-    initEnv();
+    initEnv(program.opts().dataDir);
     const user = getUser(userId);
     if (!user) {
       console.error(`User not found: ${userId}`);
@@ -83,7 +86,7 @@ userCmd
   .requiredOption('-p, --platform <platform>', 'Platform name (telegram, cli, qq, wechat)')
   .requiredOption('-u, --platform-user-id <id>', 'Platform user ID')
   .action((opts: { token: string; platform: string; platformUserId: string }) => {
-    initEnv();
+    initEnv(program.opts().dataDir);
     const validPlatforms = ['telegram', 'cli', 'qq', 'wechat'];
     if (!validPlatforms.includes(opts.platform)) {
       console.error(`Invalid platform: ${opts.platform}. Must be one of: ${validPlatforms.join(', ')}`);
@@ -105,7 +108,7 @@ program
   .description('Start interactive CLI chat session')
   .action(async () => {
     // 复用 index.ts 的启动流程。
-    const config = loadConfig();
+    const config = loadConfig({ dataDir: program.opts().dataDir });
     createLogger(config.logging);
     const log = getLogger();
     log.info('Better-Claw CLI chat starting...');

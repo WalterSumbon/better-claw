@@ -1,1 +1,141 @@
-test
+# Better-Claw
+
+基于 [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk) 的个人 Agent 框架，支持 Telegram / CLI 多平台接入、长期记忆、定时任务和多用户管理。
+
+## 前置依赖
+
+- **Node.js** ≥ 20
+- **Claude Code CLI** 已安装并完成认证（`claude --version` 可正常输出）— Agent SDK 复用 CLI 认证，无需单独配置 API Key
+
+## 快速开始
+
+```bash
+# 1. 克隆仓库并安装依赖。
+git clone https://github.com/your-org/better-claw.git
+cd better-claw
+npm install
+
+# 2. 初始化数据目录（首次运行会自动创建并复制 config.example.yaml）。
+npx tsx src/index.ts
+# 输出：Initialized new data directory: .../data
+# 输出：Please edit .../data/config.yaml and restart.
+
+# 3. 编辑配置文件，填入实际值（至少检查 anthropic 和 telegram 部分）。
+$EDITOR data/config.yaml
+
+# 4. 启动服务。
+npx tsx src/index.ts
+```
+
+## 数据目录 (`--data-dir`)
+
+每个数据目录对应一个独立的 agent 实例，包含配置、用户数据、日志和会话历史。通过 `--data-dir` 参数可以在同一台机器上运行多个 agent 实例：
+
+```bash
+# 使用默认 ./data/ 目录。
+npx tsx src/index.ts
+
+# 指定自定义数据目录。
+npx tsx src/index.ts --data-dir /path/to/my-agent
+
+# start.sh 自动重启模式也支持 --data-dir。
+./start.sh --data-dir /path/to/my-agent
+```
+
+**首次使用新目录时**，程序会自动创建目录、复制 `config.example.yaml` 作为初始配置，然后退出并提示编辑配置文件。
+
+## 配置文件
+
+配置文件位于 `<data-dir>/config.yaml`，所有字段都有默认值。最小可运行配置为空文件（Agent SDK 使用 CLI 认证）。
+
+完整配置项参考 [config.example.yaml](config.example.yaml)。
+
+关键配置说明：
+
+| 字段 | 说明 |
+|------|------|
+| `anthropic.authToken` / `baseUrl` | 通过代理服务器认证时使用 |
+| `telegram.botToken` | 不配置则不启动 Telegram 适配器 |
+| `logging.directory` | 相对路径基于 dataDir 解析，默认 `logs` |
+| `session.rotationTimeoutHours` | 超过此小时数自动开新会话 |
+| `mcpExtensions` | 启用 Playwright / Peekaboo 等外部 MCP 工具 |
+
+## CLI 工具
+
+```bash
+# 用户管理。
+npx tsx src/cli.ts user create -n "Alice"
+npx tsx src/cli.ts user list
+npx tsx src/cli.ts user info <userId>
+npx tsx src/cli.ts user bind -t <token> -p telegram -u <telegramUserId>
+
+# 交互式 CLI 对话（开发调试用）。
+npx tsx src/cli.ts chat
+
+# 所有子命令也支持 --data-dir。
+npx tsx src/cli.ts -d /path/to/agent user list
+```
+
+## 开发
+
+```bash
+# 开发模式运行。
+npm run dev
+
+# CLI 对话模式。
+npm run dev:chat
+
+# 编译 TypeScript。
+npm run build
+
+# 运行测试（在 Claude Code 会话内需去掉 CLAUDECODE 环境变量）。
+env -u CLAUDECODE npx vitest run
+
+# 监听模式测试。
+env -u CLAUDECODE npx vitest
+```
+
+## 目录结构
+
+```
+better-claw/
+├── src/
+│   ├── index.ts              # 服务入口
+│   ├── cli.ts                # CLI 管理工具入口
+│   ├── config/               # YAML 配置加载 + Zod 校验
+│   ├── core/                 # Agent 会话、消息队列、上下文管理
+│   ├── adapter/              # 消息平台适配器（CLI、Telegram）
+│   ├── memory/               # 两层记忆系统（core + extended）
+│   ├── cron/                 # 定时任务调度与管理
+│   ├── mcp/                  # MCP 工具服务器
+│   ├── user/                 # 用户管理与数据存储
+│   └── logger/               # pino 日志（控制台 + 文件轮转）
+├── tests/                    # vitest 测试
+├── data/                     # 默认数据目录（gitignore）
+├── config.example.yaml       # 配置模板
+├── start.sh                  # 自动重启启动脚本
+└── AGENT.md                  # 架构设计文档
+```
+
+## 数据目录内部结构
+
+```
+<data-dir>/
+├── config.yaml
+├── logs/
+│   └── app.*.log
+└── users/
+    └── <userId>/
+        ├── profile.json
+        ├── session.json
+        ├── workspace/
+        ├── sessions/
+        ├── memory/
+        │   ├── core.json
+        │   └── extended/
+        └── crons.json
+```
+
+## License
+
+MIT

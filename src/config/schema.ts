@@ -34,8 +34,8 @@ const ContextConfigSchema = z.object({
 const LoggingConfigSchema = z.object({
   /** 日志级别。 */
   level: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
-  /** 日志文件目录（相对于项目根目录）。 */
-  directory: z.string().default('data/logs'),
+  /** 日志文件目录（相对路径基于 dataDir 解析）。 */
+  directory: z.string().default('logs'),
   /** 单个日志文件最大体积（pino-roll 格式：数字 + k/m/g，如 10m）。 */
   maxSize: z.string().default('10m'),
   /** 保留的轮转文件数量。 */
@@ -97,7 +97,7 @@ export const AppConfigSchema = z.object({
   /** 日志配置。 */
   logging: LoggingConfigSchema.default(() => ({
     level: 'info' as const,
-    directory: 'data/logs',
+    directory: 'logs',
     maxSize: '10m',
     maxFiles: 10,
     replyLogMaxLength: 200,
