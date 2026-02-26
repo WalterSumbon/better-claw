@@ -233,13 +233,14 @@ export class TelegramAdapter implements MessageAdapter {
       };
 
       // 尝试语音转文字。
-      const transcript = await transcribeAudio(localPath);
+      const sttResult = await transcribeAudio(localPath);
 
       const textParts: string[] = [];
-      if (transcript) {
-        textParts.push(`[用户发送了语音消息，转录文本: ${transcript}]`);
+      if (sttResult.text) {
+        textParts.push(`[用户发送了语音消息，转录文本: ${sttResult.text}]`);
       } else {
-        textParts.push(`[用户发送了语音消息: ${localPath}]（自动语音转文字不可用，请使用可用的语音转录工具或 skill 来处理该音频文件）`);
+        const reason = sttResult.unavailableReason ? `（原因: ${sttResult.unavailableReason}）` : '';
+        textParts.push(`[用户发送了语音消息: ${localPath}]（自动语音转文字不可用${reason}，请使用可用的语音转录工具或 skill 来处理该音频文件）`);
       }
 
       const msg: InboundMessage = {
@@ -448,13 +449,14 @@ export class TelegramAdapter implements MessageAdapter {
       };
 
       // 尝试语音转文字。
-      const transcript = await transcribeAudio(localPath);
+      const sttResult = await transcribeAudio(localPath);
 
       const textParts: string[] = [];
-      if (transcript) {
-        textParts.push(`[用户发送了音频: ${localPath}] (文件名: ${fileName}, 时长: ${audio.duration}秒, 转录文本: ${transcript})`);
+      if (sttResult.text) {
+        textParts.push(`[用户发送了音频: ${localPath}] (文件名: ${fileName}, 时长: ${audio.duration}秒, 转录文本: ${sttResult.text})`);
       } else {
-        textParts.push(`[用户发送了音频: ${localPath}] (文件名: ${fileName}, 时长: ${audio.duration}秒)`);
+        const reason = sttResult.unavailableReason ? `（原因: ${sttResult.unavailableReason}）` : '';
+        textParts.push(`[用户发送了音频: ${localPath}] (文件名: ${fileName}, 时长: ${audio.duration}秒)（自动转录不可用${reason}）`);
       }
       if (caption) {
         textParts.push(caption);
