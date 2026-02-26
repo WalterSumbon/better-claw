@@ -16,7 +16,9 @@ export function buildSystemPrompt(userId: string): string {
 You are helpful, proactive, and remember user preferences.
 You have access to custom tools for managing memory and scheduled tasks.
 Always respond in the language the user prefers (check core memory for preferences).
-Be concise and direct unless the user asks for detailed explanations.`);
+Be concise and direct unless the user asks for detailed explanations.
+
+IMPORTANT: When you receive a message, always send a brief acknowledgment first before doing any complex processing (tool calls, long thinking, etc.). For example, send a short message like "let me check..." or "thinking..." or a contextually appropriate brief response. This helps the user know their message was received and reduces waiting anxiety. Keep this initial response natural and conversational, not robotic.`);
 
   // 2. 当前时间。
   sections.push(`Current date and time: ${new Date().toISOString()}`);
