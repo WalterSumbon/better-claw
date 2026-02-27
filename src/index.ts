@@ -364,16 +364,25 @@ async function main(): Promise<void> {
     log.info('Telegram adapter started');
   }
 
-  // 8. 初始化定时任务调度器。
+  // 8. 启动钉钉适配器（如果配置了 clientId）。
+  if (config.dingtalk?.clientId) {
+    const { DingtalkAdapter } = await import('./adapter/dingtalk/adapter.js');
+    const dtAdapter = await DingtalkAdapter.create(config.dingtalk);
+    adapters.push(dtAdapter);
+    await dtAdapter.start((msg) => handleMessage(msg, dtAdapter));
+    log.info('DingTalk adapter started');
+  }
+
+  // 9. 初始化定时任务调度器。
   initScheduler((userId: string, task: CronTask) => {
     handleCronTrigger(userId, task);
   });
   log.info('Cron scheduler initialized');
 
-  // 9. 重启后自动恢复对话。
+  // 10. 重启后自动恢复对话。
   handlePostRestart();
 
-  // 10. 优雅关闭。
+  // 11. 优雅关闭。
   const shutdown = async () => {
     log.info('Shutting down...');
     stopAllJobs();

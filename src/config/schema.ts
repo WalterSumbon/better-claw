@@ -72,6 +72,16 @@ const RestartConfigSchema = z.object({
   userWhitelist: z.array(z.string()).default([]),
 });
 
+/** 钉钉机器人配置。 */
+const DingtalkConfigSchema = z.object({
+  /** 应用的 AppKey（ClientID），从钉钉开放平台获取。 */
+  clientId: z.string(),
+  /** 应用的 AppSecret（ClientSecret），从钉钉开放平台获取。 */
+  clientSecret: z.string(),
+  /** 应用的 robotCode，用于主动发消息 API。不填时默认使用 clientId。 */
+  robotCode: z.string().optional(),
+});
+
 /** 语音转文字配置。 */
 const SpeechToTextConfigSchema = z.object({
   /** whisper 可执行文件路径。 */
@@ -125,6 +135,8 @@ export const AppConfigSchema = z.object({
   })),
   /** 语音转文字配置（可选，不配置则语音消息仅保存文件，由 agent 自行决定如何处理）。 */
   speechToText: SpeechToTextConfigSchema.optional(),
+  /** 钉钉配置（可选，不配置则不启动钉钉适配器）。 */
+  dingtalk: DingtalkConfigSchema.optional(),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
