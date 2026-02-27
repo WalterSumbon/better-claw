@@ -13,6 +13,7 @@ import { findPendingRestarts, deleteRestartMarker, writeRestartMarker } from './
 import type { InboundMessage } from './adapter/types.js';
 import type { MessageAdapter } from './adapter/interface.js';
 import type { CronTask } from './cron/types.js';
+import { installSkills } from './utils/install-skills.js';
 
 /**
  * 从 process.argv 解析 --data-dir 参数。
@@ -319,11 +320,14 @@ async function main(): Promise<void> {
   const log = getLogger();
   log.info('Better-Claw starting...');
 
-  // 3. 加载用户绑定缓存。
+  // 3. 安装内置 skills 到 ~/.claude/skills/。
+  installSkills();
+
+  // 4. 加载用户绑定缓存。
   loadBindingCache();
   log.info('User binding cache loaded');
 
-  // 4. 如果没有任何用户，创建一个默认用户（MVP 便利）。
+  // 5. 如果没有任何用户，创建一个默认用户（MVP 便利）。
   const { listUsers } = await import('./user/manager.js');
   const users = listUsers();
   if (users.length === 0) {
@@ -337,12 +341,12 @@ async function main(): Promise<void> {
     log.info('Default user auto-bound to CLI');
   }
 
-  // 5. 启动 CLI 适配器。
+  // 6. 启动 CLI 适配器。
   const cliAdapter = new CLIAdapter();
   adapters.push(cliAdapter);
   await cliAdapter.start((msg) => handleMessage(msg, cliAdapter));
 
-  // 6. 启动 Telegram 适配器（如果配置了 botToken）。
+  // 7. 启动 Telegram 适配器（如果配置了 botToken）。
   if (config.telegram?.botToken) {
     const { TelegramAdapter } = await import('./adapter/telegram/adapter.js');
     const tgAdapter = await TelegramAdapter.create(config.telegram.botToken, config.telegram.proxy);
@@ -351,16 +355,16 @@ async function main(): Promise<void> {
     log.info('Telegram adapter started');
   }
 
-  // 7. 初始化定时任务调度器。
+  // 8. 初始化定时任务调度器。
   initScheduler((userId: string, task: CronTask) => {
     handleCronTrigger(userId, task);
   });
   log.info('Cron scheduler initialized');
 
-  // 8. 重启后自动恢复对话。
+  // 9. 重启后自动恢复对话。
   handlePostRestart();
 
-  // 9. 优雅关闭。
+  // 10. 优雅关闭。
   const shutdown = async () => {
     log.info('Shutting down...');
     stopAllJobs();

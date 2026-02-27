@@ -63,6 +63,18 @@ npx tsx src/index.ts --data-dir /path/to/my-agent
 | `logging.directory` | 相对路径基于 dataDir 解析，默认 `logs` |
 | `session.rotationTimeoutHours` | 超过此小时数自动开新会话 |
 
+## 内置 Skills
+
+仓库自带以下 Claude Code skills，启动时自动通过 symlink 安装到 `~/.claude/skills/`：
+
+| Skill | 说明 | 额外依赖 |
+|-------|------|----------|
+| `playwright` | 浏览器自动化（导航、截图、表单填写、数据抓取） | 需配置 Playwright MCP server |
+| `peekaboo` | macOS 屏幕截图与 GUI 自动化 | 需配置 Peekaboo MCP server |
+| `speech-to-text` | 语音/音频文件转录为文字 | 需安装 `openai-whisper` 和 `ffmpeg` |
+
+Playwright 和 Peekaboo 需要在 `~/.claude/settings.json` 中配置对应的 MCP server，参考各 skill 目录下的 `SKILL.md` 说明。
+
 ## 对话命令
 
 在 Telegram 或 CLI 对话中可使用以下命令：
