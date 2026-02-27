@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { resolve } from 'path';
+import { createInterface } from 'readline';
 import { Command } from 'commander';
 import { loadConfig } from './config/index.js';
 import { createLogger, getLogger } from './logger/index.js';
@@ -11,6 +13,7 @@ import {
   bindPlatform,
 } from './user/manager.js';
 import type { PlatformType } from './user/types.js';
+import { exportData, importData, hasExistingData } from './data/migrate.js';
 
 /**
  * 初始化运行环境（配置 + 日志 + 绑定缓存）。
@@ -97,6 +100,65 @@ userCmd
       console.log(`Bound ${opts.platform}:${opts.platformUserId} to user ${profile.userId} (${profile.name})`);
     } else {
       console.error('Invalid token.');
+      process.exit(1);
+    }
+  });
+
+// --- data 子命令组 ---
+
+const dataCmd = program.command('data').description('Data migration (export / import)');
+
+dataCmd
+  .command('export')
+  .description('Export agent data directory to a zip file')
+  .requiredOption('-o, --output <path>', 'Output zip file path')
+  .action((opts: { output: string }) => {
+    const config = loadConfig({ dataDir: program.opts().dataDir });
+    const outputPath = resolve(opts.output);
+    try {
+      const summary = exportData(config.dataDir, outputPath);
+      console.log('Export completed:');
+      console.log(`  Users:  ${summary.userCount}`);
+      console.log(`  Files:  ${summary.fileCount}`);
+      console.log(`  Output: ${summary.outputPath}`);
+    } catch (err) {
+      console.error(`Export failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+dataCmd
+  .command('import')
+  .description('Import agent data from a zip file')
+  .requiredOption('-i, --input <path>', 'Input zip file path')
+  .action(async (opts: { input: string }) => {
+    const config = loadConfig({ dataDir: program.opts().dataDir });
+    const inputPath = resolve(opts.input);
+
+    // 检查目标目录是否已有数据，提示用户确认覆盖。
+    if (hasExistingData(config.dataDir)) {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise<string>((res) => {
+        rl.question(
+          `Target directory "${config.dataDir}" already has user data. Overwrite? [y/N] `,
+          res,
+        );
+      });
+      rl.close();
+      if (answer.toLowerCase() !== 'y') {
+        console.log('Import cancelled.');
+        return;
+      }
+    }
+
+    try {
+      const summary = importData(inputPath, config.dataDir);
+      console.log('Import completed:');
+      console.log(`  Users:   ${summary.userCount}`);
+      console.log(`  Files:   ${summary.fileCount}`);
+      console.log(`  Config:  ${summary.configImported ? 'imported' : 'not found in zip'}`);
+    } catch (err) {
+      console.error(`Import failed: ${(err as Error).message}`);
       process.exit(1);
     }
   });
