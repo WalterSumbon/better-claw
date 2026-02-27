@@ -60,6 +60,10 @@ anthropic:
 #
 #   # robotCode（可选）。用于主动发消息 API，不填时默认使用 clientId。
 #   # robotCode: "your-robot-code"
+#
+#   # 以下为企业定制版钉钉（如蚂蚁钉）的 API 地址配置，标准钉钉无需修改。
+#   # apiBase: "https://api.dingtalk.com"
+#   # oapiBase: "https://oapi.dingtalk.com"
 
 # ----------------------------------------------------------------------------
 # 日志配置

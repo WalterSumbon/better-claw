@@ -5,12 +5,6 @@ import type { MessageAdapter, SendFileOptions } from '../interface.js';
 import type { InboundMessage } from '../types.js';
 import { getLogger } from '../../logger/index.js';
 
-/** 钉钉 OpenAPI 基础地址。 */
-const DINGTALK_API_BASE = 'https://api.dingtalk.com/v1.0';
-
-/** 钉钉旧版 API 基础地址（获取 token 用）。 */
-const DINGTALK_OAPI_BASE = 'https://oapi.dingtalk.com';
-
 /** Access token 缓存有效期（毫秒），钉钉 token 有效期 7200 秒，提前 5 分钟刷新。 */
 const TOKEN_TTL_MS = (7200 - 300) * 1000;
 
@@ -25,15 +19,25 @@ interface DingtalkAdapterOptions {
   clientId: string;
   clientSecret: string;
   robotCode?: string;
+  /** 新版 OpenAPI 基础地址，如 https://api.dingtalk.com。 */
+  apiBase?: string;
+  /** 旧版 OAPI 基础地址，如 https://oapi.dingtalk.com。 */
+  oapiBase?: string;
 }
 
-/** 钉钉适配器：通过 Stream 模式接收消息，通过 OpenAPI 发送消息。 */
+/**
+ * 钉钉适配器：通过 Stream 模式接收消息，通过 OpenAPI 发送消息。
+ *
+ * 支持标准钉钉和蚂蚁钉等企业定制版（通过 apiBase / oapiBase 配置）。
+ */
 export class DingtalkAdapter implements MessageAdapter {
   readonly platform = 'dingtalk' as const;
   private client: DWClient;
   private clientId: string;
   private clientSecret: string;
   private robotCode: string;
+  private apiBase: string;
+  private oapiBase: string;
 
   /** access token 缓存。 */
   private accessToken = '';
@@ -47,6 +51,8 @@ export class DingtalkAdapter implements MessageAdapter {
     this.clientId = options.clientId;
     this.clientSecret = options.clientSecret;
     this.robotCode = options.robotCode ?? options.clientId;
+    this.apiBase = (options.apiBase ?? 'https://api.dingtalk.com').replace(/\/+$/, '');
+    this.oapiBase = (options.oapiBase ?? 'https://oapi.dingtalk.com').replace(/\/+$/, '');
   }
 
   /**
@@ -74,7 +80,7 @@ export class DingtalkAdapter implements MessageAdapter {
     }
 
     const log = getLogger();
-    const url = `${DINGTALK_OAPI_BASE}/gettoken?appkey=${encodeURIComponent(this.clientId)}&appsecret=${encodeURIComponent(this.clientSecret)}`;
+    const url = `${this.oapiBase}/gettoken?appkey=${encodeURIComponent(this.clientId)}&appsecret=${encodeURIComponent(this.clientSecret)}`;
     const res = await fetch(url);
     const data = await res.json() as { errcode: number; errmsg: string; access_token?: string };
 
@@ -87,6 +93,47 @@ export class DingtalkAdapter implements MessageAdapter {
     this.tokenExpiresAt = Date.now() + TOKEN_TTL_MS;
     log.debug('DingTalk access token refreshed');
     return this.accessToken;
+  }
+
+  /**
+   * 获取 Stream WebSocket 连接端点。
+   *
+   * 绕过 SDK 内置的 getEndpoint()，使用可配置的 apiBase 地址，
+   * 以支持蚂蚁钉等企业定制版钉钉。
+   *
+   * @returns WebSocket URL（含 ticket）。
+   */
+  private async getStreamEndpoint(): Promise<string> {
+    const log = getLogger();
+    const token = await this.getAccessToken();
+
+    const gatewayUrl = `${this.apiBase}/v1.0/gateway/connections/open`;
+    const res = await fetch(gatewayUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'access-token': token,
+      },
+      body: JSON.stringify({
+        clientId: this.clientId,
+        clientSecret: this.clientSecret,
+        subscriptions: this.client.getConfig().subscriptions,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      log.error({ status: res.status, body: errText }, 'Failed to get DingTalk Stream endpoint');
+      throw new Error(`DingTalk gateway failed: ${res.status}`);
+    }
+
+    const data = await res.json() as { endpoint?: string; ticket?: string };
+    if (!data.endpoint || !data.ticket) {
+      throw new Error('DingTalk gateway: missing endpoint or ticket');
+    }
+
+    return `${data.endpoint}?ticket=${data.ticket}`;
   }
 
   /**
@@ -179,8 +226,28 @@ export class DingtalkAdapter implements MessageAdapter {
       return { status: EventAck.SUCCESS };
     });
 
-    await this.client.connect();
-    log.info('DingTalk Stream client connected');
+    // 判断是否使用自定义 API 地址（非标准钉钉）。
+    const isCustomApi = this.apiBase !== 'https://api.dingtalk.com'
+      || this.oapiBase !== 'https://oapi.dingtalk.com';
+
+    if (isCustomApi) {
+      // 蚂蚁钉等定制版：绕过 SDK 内置连接逻辑，自行获取 endpoint 并连接。
+      const wsUrl = await this.getStreamEndpoint();
+      // 通过内部属性注入 WebSocket URL，然后调用底层 _connect()。
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 访问 SDK 私有属性以注入自定义 WebSocket URL。
+      const clientAny = this.client as any;
+      clientAny['dw_url'] = wsUrl;
+      clientAny['config'] = {
+        ...(this.client.getConfig()),
+        access_token: this.accessToken,
+      };
+      await this.client._connect();
+      log.info({ apiBase: this.apiBase, oapiBase: this.oapiBase }, 'DingTalk Stream client connected (custom API)');
+    } else {
+      // 标准钉钉：使用 SDK 内置的连接流程。
+      await this.client.connect();
+      log.info('DingTalk Stream client connected');
+    }
   }
 
   /** 停止钉钉适配器。 */
@@ -230,7 +297,7 @@ export class DingtalkAdapter implements MessageAdapter {
     const log = getLogger();
     const token = await this.getAccessToken();
 
-    const res = await fetch(`${DINGTALK_API_BASE}/robot/oToMessages/batchSend`, {
+    const res = await fetch(`${this.apiBase}/v1.0/robot/oToMessages/batchSend`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -295,7 +362,6 @@ export class DingtalkAdapter implements MessageAdapter {
     const fileName = basename(filePath);
 
     const formData = new FormData();
-    // 使用 fs.readFile 获取 ArrayBuffer，避免 Buffer 与 Blob 的类型不兼容问题。
     const { readFile } = await import('fs/promises');
     const fileBytes = await readFile(filePath);
     const arrayBuffer = fileBytes.buffer.slice(fileBytes.byteOffset, fileBytes.byteOffset + fileBytes.byteLength);
@@ -304,7 +370,7 @@ export class DingtalkAdapter implements MessageAdapter {
     formData.append('type', fileType);
 
     const res = await fetch(
-      `${DINGTALK_API_BASE}/robot/messageFiles/upload?robotCode=${encodeURIComponent(this.robotCode)}`,
+      `${this.apiBase}/v1.0/robot/messageFiles/upload?robotCode=${encodeURIComponent(this.robotCode)}`,
       {
         method: 'POST',
         headers: {
@@ -384,8 +450,7 @@ export class DingtalkAdapter implements MessageAdapter {
 
       let msgParam: string;
       if (msgKey === 'sampleImageMsg') {
-        // 图片消息使用 photoURL（mediaId 无法直接用于图片，需要使用下载链接）。
-        // 钉钉图片消息实际通过 mediaId 发送时，使用 sampleFile 更可靠。
+        // 钉钉图片消息通过 mediaId 发送时，使用 sampleFile 更可靠。
         msgParam = JSON.stringify({ mediaId, fileName, fileType: mediaType });
         msgKey = 'sampleFile';
       } else {

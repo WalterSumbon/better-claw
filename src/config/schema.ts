@@ -80,6 +80,10 @@ const DingtalkConfigSchema = z.object({
   clientSecret: z.string(),
   /** 应用的 robotCode，用于主动发消息 API。不填时默认使用 clientId。 */
   robotCode: z.string().optional(),
+  /** 新版 OpenAPI 基础地址。标准钉钉为 https://api.dingtalk.com，蚂蚁钉等定制版需替换。 */
+  apiBase: z.string().default('https://api.dingtalk.com'),
+  /** 旧版 OAPI 基础地址（用于获取 access token）。标准钉钉为 https://oapi.dingtalk.com。 */
+  oapiBase: z.string().default('https://oapi.dingtalk.com'),
 });
 
 /** 语音转文字配置。 */
