@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, copyFileSync } from 'fs';
 import { resolve } from 'path';
-import { loadConfig } from './config/index.js';
+import { loadConfig, getConfig } from './config/index.js';
 import { createLogger, getLogger } from './logger/index.js';
 import { loadBindingCache, resolveUser, bindPlatform, createUser, getUser } from './user/manager.js';
 import { CLIAdapter } from './adapter/cli/adapter.js';
@@ -104,6 +104,15 @@ async function handleMessage(
       case 'restart': {
         const userId = resolveUser(msg.platform, msg.platformUserId);
         if (userId) {
+          const restartConfig = getConfig().restart;
+          if (!restartConfig.allowUser) {
+            await adapter.sendText(msg.platformUserId, 'Restart via command is disabled.');
+            return;
+          }
+          if (restartConfig.userWhitelist.length > 0 && !restartConfig.userWhitelist.includes(userId)) {
+            await adapter.sendText(msg.platformUserId, 'You are not authorized to restart.');
+            return;
+          }
           log.info({ userId, platform: msg.platform }, 'Restart requested via /restart command');
           writeRestartMarker(userId, 'command');
           await adapter.sendText(msg.platformUserId, '🔄 Restarting...');

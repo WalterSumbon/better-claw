@@ -61,6 +61,17 @@ const SessionConfigSchema = z.object({
   maxRecentSessions: z.number().min(1).default(3),
 });
 
+/** 重启权限配置。 */
+const RestartConfigSchema = z.object({
+  /** 是否允许 agent（通过 MCP 工具）触发重启。 */
+  allowAgent: z.boolean().default(true),
+  /** 是否允许用户（通过 /restart 命令）触发重启。 */
+  allowUser: z.boolean().default(true),
+  /** 允许触发重启的用户 ID 白名单。为空数组时表示不限制（所有用户均可）。
+   *  仅在 allowUser 为 true 时生效。 */
+  userWhitelist: z.array(z.string()).default([]),
+});
+
 /** 语音转文字配置。 */
 const SpeechToTextConfigSchema = z.object({
   /** whisper 可执行文件路径。 */
@@ -105,6 +116,12 @@ export const AppConfigSchema = z.object({
     summaryEnabled: true,
     summaryModel: 'claude-haiku-4-20250414',
     maxRecentSessions: 3,
+  })),
+  /** 重启权限配置。 */
+  restart: RestartConfigSchema.default(() => ({
+    allowAgent: true,
+    allowUser: true,
+    userWhitelist: [] as string[],
   })),
   /** 语音转文字配置（可选，不配置则语音消息仅保存文件，由 agent 自行决定如何处理）。 */
   speechToText: SpeechToTextConfigSchema.optional(),

@@ -182,7 +182,7 @@ export async function sendToAgent(
       'mcp__better-claw__cron_update',
       'mcp__better-claw__cron_delete',
       'mcp__better-claw__send_file',
-      'mcp__better-claw__restart',
+      ...(config.restart.allowAgent ? ['mcp__better-claw__restart'] : []),
       'mcp__better-claw__session_new',
       'mcp__better-claw__session_list',
       'mcp__better-claw__session_info',

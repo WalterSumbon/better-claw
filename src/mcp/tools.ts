@@ -5,6 +5,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { agentContext } from '../core/agent-context.js';
 import { getLogger } from '../logger/index.js';
 import { writeRestartMarker } from '../core/restart-marker.js';
+import { getConfig } from '../config/index.js';
 
 /** MCP 工具：restart。重启 Better-Claw 服务。 */
 export const restartTool = tool(
@@ -21,6 +22,16 @@ After restart, the agent will automatically resume the conversation and notify t
     const log = getLogger();
     const store = agentContext.getStore();
     const userId = store?.userId;
+
+    // 检查 agent 是否被允许触发重启。
+    if (!getConfig().restart.allowAgent) {
+      log.info({ userId }, 'Agent restart blocked by config (restart.allowAgent=false)');
+      return {
+        content: [
+          { type: 'text' as const, text: 'Restart via agent is disabled by configuration.' },
+        ],
+      };
+    }
 
     // 写入重启标记，以便服务重启后自动恢复对话。
     if (userId) {
