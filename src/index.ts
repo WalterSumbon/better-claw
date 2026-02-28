@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, copyFileSync } from 'fs';
 import { resolve } from 'path';
 import { loadConfig, getConfig } from './config/index.js';
 import { createLogger, getLogger } from './logger/index.js';
-import { loadBindingCache, resolveUser, bindPlatform, createUser, getUser } from './user/manager.js';
+import { loadBindingCache, resolveUser, bindPlatform, createUser, getUser, matchesWhitelist } from './user/manager.js';
 import { CLIAdapter } from './adapter/cli/adapter.js';
 import { enqueue, interrupt } from './core/queue.js';
 import { initScheduler, stopAllJobs } from './cron/scheduler.js';
@@ -110,7 +110,7 @@ async function handleMessage(
             await adapter.sendText(msg.platformUserId, 'Restart via command is disabled.');
             return;
           }
-          if (restartConfig.userWhitelist.length > 0 && !restartConfig.userWhitelist.includes(userId)) {
+          if (restartConfig.userWhitelist.length > 0 && !matchesWhitelist(userId, restartConfig.userWhitelist)) {
             await adapter.sendText(msg.platformUserId, 'You are not authorized to restart.');
             return;
           }

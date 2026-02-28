@@ -1,7 +1,35 @@
 import { generateUserToken, generateId } from '../utils/token.js';
 import { readProfile, writeProfile, readAllProfiles, deleteUserDir } from './store.js';
-import { getWorkGroups, updateWorkGroups } from '../config/index.js';
+import { getWorkGroups, updateWorkGroups, getConfig } from '../config/index.js';
 import type { UserProfile, PlatformType } from './types.js';
+
+/**
+ * 检查用户是否匹配白名单中的任意条目。
+ * 支持两种格式：
+ * - userId 直接匹配
+ * - @groupName 匹配用户所属权限组
+ *
+ * @param userId - 系统用户 ID。
+ * @param whitelist - 白名单条目数组。
+ * @returns 用户匹配任意条目时返回 true。
+ */
+export function matchesWhitelist(userId: string, whitelist: string[]): boolean {
+  for (const entry of whitelist) {
+    if (entry.startsWith('@')) {
+      const groupName = entry.slice(1);
+      const profile = readProfile(userId);
+      const userGroup = profile?.permissionGroup ?? getConfig().permissions.defaultGroup;
+      if (userGroup === groupName) {
+        return true;
+      }
+    } else {
+      if (entry === userId) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 /** 平台用户 → 系统用户 ID 的内存缓存。 */
 const bindingCache = new Map<string, string>();
