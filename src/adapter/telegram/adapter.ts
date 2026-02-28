@@ -17,7 +17,7 @@ export class TelegramAdapter implements MessageAdapter {
   private bot: Bot;
   private botToken: string;
   private fetchAgent: unknown | undefined;
-  private commandPrefix: string;
+  readonly commandPrefix: string;
   private running = false;
 
   /**
@@ -679,7 +679,7 @@ export class TelegramAdapter implements MessageAdapter {
       { command: 'new', description: '开始新会话（归档当前会话）' },
       { command: 'stop', description: '中断当前 AI 响应' },
       { command: 'restart', description: '重启服务' },
-      { command: 'bind', description: '绑定账号（/bind <token>）' },
+      { command: 'bind', description: `绑定账号（${this.commandPrefix}bind <token>）` },
     ]);
 
     // 清除可能存在的 webhook，确保 long polling 正常工作。

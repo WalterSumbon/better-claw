@@ -49,7 +49,7 @@ userCmd
     console.log(`  ID:    ${profile.userId}`);
     console.log(`  Name:  ${profile.name}`);
     console.log(`  Token: ${profile.token}`);
-    console.log('\nUse this token to bind platform accounts via /bind <token>');
+    console.log('\nUse this token to bind platform accounts (e.g. /bind <token> or .bind <token>)');
   });
 
 userCmd
@@ -201,7 +201,7 @@ program
           case 'bind': {
             const token = msg.commandArgs?.trim();
             if (!token) {
-              await cliAdapter.sendText(msg.platformUserId, 'Usage: /bind <your-token>');
+              await cliAdapter.sendText(msg.platformUserId, `Usage: ${cliAdapter.commandPrefix}bind <your-token>`);
               return;
             }
             const profile = bindPlatform(token, msg.platform as PlatformType, msg.platformUserId);
@@ -232,7 +232,7 @@ program
       if (!userId) {
         await cliAdapter.sendText(
           msg.platformUserId,
-          "I don't recognize you yet. Use /bind <your-token> to link your account.",
+          `I don't recognize you yet. Use ${cliAdapter.commandPrefix}bind <your-token> to link your account.`,
         );
         return;
       }

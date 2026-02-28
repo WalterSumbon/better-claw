@@ -40,7 +40,7 @@ export class DingtalkAdapter implements MessageAdapter {
   private robotCode: string;
   private apiBase: string;
   private oapiBase: string;
-  private commandPrefix: string;
+  readonly commandPrefix: string;
 
   /** access token 缓存。 */
   private accessToken = '';

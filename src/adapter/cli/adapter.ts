@@ -6,6 +6,7 @@ import { formatForTerminal } from './formatter.js';
 /** CLI 适配器：通过终端 stdin/stdout 与 agent 交互。 */
 export class CLIAdapter implements MessageAdapter {
   readonly platform = 'cli' as const;
+  readonly commandPrefix = '/';
   private rl: ReadlineInterface | null = null;
   private running = false;
 

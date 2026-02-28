@@ -12,6 +12,8 @@ export interface SendFileOptions {
 export interface MessageAdapter {
   /** 平台标识符。 */
   readonly platform: string;
+  /** 命令前缀（如 "/" 或 "."）。 */
+  readonly commandPrefix: string;
 
   /**
    * 启动适配器（开始监听消息）。

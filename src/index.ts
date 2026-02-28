@@ -75,7 +75,7 @@ async function handleMessage(
       case 'bind': {
         const token = msg.commandArgs?.trim();
         if (!token) {
-          await adapter.sendText(msg.platformUserId, 'Usage: /bind <your-token>');
+          await adapter.sendText(msg.platformUserId, `Usage: ${adapter.commandPrefix}bind <your-token>`);
           return;
         }
         const profile = bindPlatform(token, msg.platform, msg.platformUserId);
@@ -156,7 +156,7 @@ async function handleMessage(
   if (!userId) {
     await adapter.sendText(
       msg.platformUserId,
-      "I don't recognize you yet. Use /bind <your-token> to link your account.",
+      `I don't recognize you yet. Use ${adapter.commandPrefix}bind <your-token> to link your account.`,
     );
     return;
   }
