@@ -226,28 +226,18 @@ export class DingtalkAdapter implements MessageAdapter {
       return { status: EventAck.SUCCESS };
     });
 
-    // 判断是否使用自定义 API 地址（非标准钉钉）。
-    const isCustomApi = this.apiBase !== 'https://api.dingtalk.com'
-      || this.oapiBase !== 'https://oapi.dingtalk.com';
-
-    if (isCustomApi) {
-      // 蚂蚁钉等定制版：绕过 SDK 内置连接逻辑，自行获取 endpoint 并连接。
-      const wsUrl = await this.getStreamEndpoint();
-      // 通过内部属性注入 WebSocket URL，然后调用底层 _connect()。
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 访问 SDK 私有属性以注入自定义 WebSocket URL。
-      const clientAny = this.client as any;
-      clientAny['dw_url'] = wsUrl;
-      clientAny['config'] = {
-        ...(this.client.getConfig()),
-        access_token: this.accessToken,
-      };
-      await this.client._connect();
-      log.info({ apiBase: this.apiBase, oapiBase: this.oapiBase }, 'DingTalk Stream client connected (custom API)');
-    } else {
-      // 标准钉钉：使用 SDK 内置的连接流程。
-      await this.client.connect();
-      log.info('DingTalk Stream client connected');
-    }
+    // 统一使用自定义连接逻辑：通过 fetch 获取 token 和 WebSocket endpoint，
+    // 绕过 SDK 内置的 axios 请求（在代理环境下 axios 可能发送 plain HTTP 到 HTTPS 端口）。
+    const wsUrl = await this.getStreamEndpoint();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 访问 SDK 私有属性以注入自定义 WebSocket URL。
+    const clientAny = this.client as any;
+    clientAny['dw_url'] = wsUrl;
+    clientAny['config'] = {
+      ...(this.client.getConfig()),
+      access_token: this.accessToken,
+    };
+    await this.client._connect();
+    log.info({ apiBase: this.apiBase, oapiBase: this.oapiBase }, 'DingTalk Stream client connected');
   }
 
   /** 停止钉钉适配器。 */
