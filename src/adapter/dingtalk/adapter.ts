@@ -23,6 +23,8 @@ interface DingtalkAdapterOptions {
   apiBase?: string;
   /** 旧版 OAPI 基础地址，如 https://oapi.dingtalk.com。 */
   oapiBase?: string;
+  /** 命令前缀（默认 "."，因为钉钉会拦截 "/" 开头的消息）。 */
+  commandPrefix?: string;
 }
 
 /**
@@ -38,6 +40,7 @@ export class DingtalkAdapter implements MessageAdapter {
   private robotCode: string;
   private apiBase: string;
   private oapiBase: string;
+  private commandPrefix: string;
 
   /** access token 缓存。 */
   private accessToken = '';
@@ -53,6 +56,7 @@ export class DingtalkAdapter implements MessageAdapter {
     this.robotCode = options.robotCode ?? options.clientId;
     this.apiBase = (options.apiBase ?? 'https://api.dingtalk.com').replace(/\/+$/, '');
     this.oapiBase = (options.oapiBase ?? 'https://oapi.dingtalk.com').replace(/\/+$/, '');
+    this.commandPrefix = options.commandPrefix ?? '.';
   }
 
   /**
@@ -192,13 +196,15 @@ export class DingtalkAdapter implements MessageAdapter {
       }
 
       // 解析命令。
-      const isCommand = text.startsWith('/');
+      const prefix = this.commandPrefix;
+      const isCommand = text.startsWith(prefix);
       let commandName: string | undefined;
       let commandArgs: string | undefined;
 
       if (isCommand) {
+        const prefixLen = prefix.length;
         const spaceIdx = text.indexOf(' ');
-        commandName = spaceIdx === -1 ? text.slice(1) : text.slice(1, spaceIdx);
+        commandName = spaceIdx === -1 ? text.slice(prefixLen) : text.slice(prefixLen, spaceIdx);
         commandArgs = spaceIdx === -1 ? '' : text.slice(spaceIdx + 1).trim();
       }
 

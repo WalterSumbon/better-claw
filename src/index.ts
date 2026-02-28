@@ -358,7 +358,7 @@ async function main(): Promise<void> {
   // 7. 启动 Telegram 适配器（如果配置了 botToken）。
   if (config.telegram?.botToken) {
     const { TelegramAdapter } = await import('./adapter/telegram/adapter.js');
-    const tgAdapter = await TelegramAdapter.create(config.telegram.botToken, config.telegram.proxy);
+    const tgAdapter = await TelegramAdapter.create(config.telegram.botToken, config.telegram.proxy, config.telegram.commandPrefix);
     adapters.push(tgAdapter);
     await tgAdapter.start((msg) => handleMessage(msg, tgAdapter));
     log.info('Telegram adapter started');

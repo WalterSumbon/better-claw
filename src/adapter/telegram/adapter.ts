@@ -17,17 +17,20 @@ export class TelegramAdapter implements MessageAdapter {
   private bot: Bot;
   private botToken: string;
   private fetchAgent: unknown | undefined;
+  private commandPrefix: string;
   private running = false;
 
   /**
    * @param bot - grammy Bot 实例。
    * @param botToken - Telegram Bot token，用于构造文件下载 URL。
    * @param fetchAgent - 可选的 HTTP 代理 agent，用于文件下载。
+   * @param commandPrefix - 命令前缀（默认 "/"）。
    */
-  private constructor(bot: Bot, botToken: string, fetchAgent?: unknown) {
+  private constructor(bot: Bot, botToken: string, fetchAgent?: unknown, commandPrefix = '/') {
     this.bot = bot;
     this.botToken = botToken;
     this.fetchAgent = fetchAgent;
+    this.commandPrefix = commandPrefix;
   }
 
   /**
@@ -35,8 +38,9 @@ export class TelegramAdapter implements MessageAdapter {
    *
    * @param botToken - Telegram Bot token。
    * @param proxy - 可选的 HTTP 代理地址，未指定时从环境变量读取。
+   * @param commandPrefix - 命令前缀（默认 "/"）。
    */
-  static async create(botToken: string, proxy?: string): Promise<TelegramAdapter> {
+  static async create(botToken: string, proxy?: string, commandPrefix = '/'): Promise<TelegramAdapter> {
     const proxyUrl = proxy || process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
     let bot: Bot;
     let fetchAgent: unknown | undefined;
@@ -51,7 +55,7 @@ export class TelegramAdapter implements MessageAdapter {
     } else {
       bot = new Bot(botToken);
     }
-    return new TelegramAdapter(bot, botToken, fetchAgent);
+    return new TelegramAdapter(bot, botToken, fetchAgent, commandPrefix);
   }
 
   /**
@@ -122,14 +126,16 @@ export class TelegramAdapter implements MessageAdapter {
       log.info({ chatId, text: text.slice(0, 100) }, 'Telegram message received');
 
       const platformUserId = String(chatId);
-      const isCommand = text.startsWith('/');
+      const prefix = this.commandPrefix;
+      const isCommand = text.startsWith(prefix);
       let commandName: string | undefined;
       let commandArgs: string | undefined;
 
       if (isCommand) {
         // 解析命令，去掉 @botname 后缀。
+        const prefixLen = prefix.length;
         const spaceIdx = text.indexOf(' ');
-        const rawCommand = spaceIdx === -1 ? text.slice(1) : text.slice(1, spaceIdx);
+        const rawCommand = spaceIdx === -1 ? text.slice(prefixLen) : text.slice(prefixLen, spaceIdx);
         commandName = rawCommand.split('@')[0];
         commandArgs = spaceIdx === -1 ? '' : text.slice(spaceIdx + 1).trim();
       }

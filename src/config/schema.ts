@@ -20,6 +20,8 @@ const TelegramConfigSchema = z.object({
   botToken: z.string(),
   /** HTTP 代理地址（如 http://127.0.0.1:7890）。 */
   proxy: z.string().optional(),
+  /** 命令前缀（默认 "/"）。 */
+  commandPrefix: z.string().default('/'),
 });
 
 /** 日志配置。 */
@@ -84,6 +86,8 @@ const DingtalkConfigSchema = z.object({
   apiBase: z.string().default('https://api.dingtalk.com'),
   /** 旧版 OAPI 基础地址（用于获取 access token）。标准钉钉为 https://oapi.dingtalk.com。 */
   oapiBase: z.string().default('https://oapi.dingtalk.com'),
+  /** 命令前缀（默认 "."，因为钉钉会拦截 "/" 开头的消息）。 */
+  commandPrefix: z.string().default('.'),
 });
 
 /** 语音转文字配置。 */
