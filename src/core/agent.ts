@@ -5,6 +5,7 @@ import {
   type SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { getConfig } from '../config/index.js';
+import type { AppConfig } from '../config/schema.js';
 import { getLogger } from '../logger/index.js';
 import type { SendFileOptions } from '../adapter/interface.js';
 import { agentContext } from './agent-context.js';
@@ -17,7 +18,7 @@ import {
   updateSessionAfterQuery,
 } from './session-manager.js';
 import { getUserWorkspacePath } from '../user/store.js';
-import { buildCanUseTool, buildSandboxSettings } from './permissions.js';
+import { buildCanUseTool, buildSandboxSettings, resolveUserPermissions } from './permissions.js';
 
 /** 每个用户的 agent 会话状态（内存中）。 */
 interface AgentSession {
@@ -101,6 +102,59 @@ export function isResultMessage(msg: SDKMessage): msg is SDKResultMessage {
   return msg.type === 'result';
 }
 
+/** 非 admin 用户的 env 白名单前缀/名称。 */
+const SAFE_ENV_PREFIXES = [
+  'PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'LC_', 'TERM', 'TMPDIR', 'TZ',
+  'NODE_', 'NPM_',
+];
+
+/**
+ * 构建传递给 SDK subprocess 的环境变量。
+ *
+ * admin 用户继承完整 process.env；非 admin 用户仅保留白名单变量，
+ * 并从配置中注入 SDK 必需的 Anthropic 变量。
+ *
+ * @param userId - 用户 ID。
+ * @param config - 应用配置。
+ * @returns 环境变量对象。
+ */
+function buildSdkEnv(userId: string, config: AppConfig): Record<string, string | undefined> {
+  const permissions = resolveUserPermissions(userId);
+  if (permissions.isAdmin) {
+    const env: Record<string, string | undefined> = { ...process.env };
+    if (config.anthropic.apiKey) {
+      env.ANTHROPIC_API_KEY = config.anthropic.apiKey;
+    }
+    if (config.anthropic.authToken) {
+      env.ANTHROPIC_AUTH_TOKEN = config.anthropic.authToken;
+    }
+    if (config.anthropic.baseUrl) {
+      env.ANTHROPIC_BASE_URL = config.anthropic.baseUrl;
+    }
+    return env;
+  }
+
+  // 白名单过滤。
+  const env: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (SAFE_ENV_PREFIXES.some((p) => key === p || key.startsWith(p))) {
+      env[key] = value;
+    }
+  }
+
+  // SDK 必需的 Anthropic 变量。
+  if (config.anthropic.apiKey) {
+    env.ANTHROPIC_API_KEY = config.anthropic.apiKey;
+  }
+  if (config.anthropic.authToken) {
+    env.ANTHROPIC_AUTH_TOKEN = config.anthropic.authToken;
+  }
+  if (config.anthropic.baseUrl) {
+    env.ANTHROPIC_BASE_URL = config.anthropic.baseUrl;
+  }
+  return env;
+}
+
 /**
  * 向 agent 发送消息并流式接收响应。
  *
@@ -151,19 +205,8 @@ export async function sendToAgent(
 
   const systemPrompt = buildSystemPrompt(userId);
 
-  // 构建传递给 SDK subprocess 的环境变量。
-  const sdkEnv: Record<string, string | undefined> = { ...process.env };
-  if (config.anthropic.apiKey) {
-    sdkEnv.ANTHROPIC_API_KEY = config.anthropic.apiKey;
-  } else if (!sdkEnv.ANTHROPIC_API_KEY) {
-    delete sdkEnv.ANTHROPIC_API_KEY;
-  }
-  if (config.anthropic.authToken) {
-    sdkEnv.ANTHROPIC_AUTH_TOKEN = config.anthropic.authToken;
-  }
-  if (config.anthropic.baseUrl) {
-    sdkEnv.ANTHROPIC_BASE_URL = config.anthropic.baseUrl;
-  }
+  // 构建传递给 SDK subprocess 的环境变量（非 admin 用户仅保留白名单）。
+  const sdkEnv = buildSdkEnv(userId, config);
 
   const permissionMode = config.permissionMode as 'default' | 'acceptEdits' | 'bypassPermissions';
 

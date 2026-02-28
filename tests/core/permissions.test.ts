@@ -102,7 +102,8 @@ describe('Permissions', () => {
       const perms = resolveUserPermissions(user.userId);
 
       expect(perms.isAdmin).toBe(false);
-      expect(perms.rules.length).toBe(4);
+      // 4 条用户组规则 + 自动追加的安全 deny 规则（~/.claude，configFile 在测试中为 null）。
+      expect(perms.rules.length).toBeGreaterThanOrEqual(4);
       expect(perms.rules[0].action).toBe('deny');
       expect(perms.rules[0].access).toBe('write');
       expect(perms.rules[0].path).toBe('*');
@@ -130,7 +131,8 @@ describe('Permissions', () => {
       const user = createUser('inherit-test');
       const perms = resolveUserPermissions(user.userId);
 
-      expect(perms.rules.length).toBe(2);
+      // 2 条用户组规则 + 自动追加的安全 deny 规则。
+      expect(perms.rules.length).toBeGreaterThanOrEqual(2);
       // 父组规则在前。
       expect(perms.rules[0]).toEqual({ action: 'deny', access: 'write', path: '*' });
       // 子组规则在后。
@@ -162,7 +164,10 @@ describe('Permissions', () => {
 
       const perms = resolveUserPermissions(user.userId);
       expect(perms.isAdmin).toBe(false);
-      expect(perms.rules).toEqual([]);
+      // 未知组无用户规则，但仍有自动追加的安全 deny 规则。
+      expect(perms.rules.length).toBeGreaterThanOrEqual(1);
+      // 安全规则应包含 ~/.claude deny。
+      expect(perms.rules.some((r) => r.action === 'deny' && r.path.includes('.claude'))).toBe(true);
     });
 
     it('should append work group rules at the end', () => {
@@ -200,11 +205,11 @@ describe('Permissions', () => {
       });
 
       const perms = resolveUserPermissions(user.userId);
-      // 最后一条应该是工作组追加的 allow readwrite 规则。
-      const lastRule = perms.rules[perms.rules.length - 1];
-      expect(lastRule.action).toBe('allow');
-      expect(lastRule.access).toBe('readwrite');
-      expect(lastRule.path).toContain('workgroups/team-alpha/workspace');
+      // 工作组规则在安全 deny 规则之前，查找包含 workgroups 路径的 allow 规则。
+      const wgRule = perms.rules.find((r) => r.path.includes('workgroups/team-alpha/workspace'));
+      expect(wgRule).toBeDefined();
+      expect(wgRule!.action).toBe('allow');
+      expect(wgRule!.access).toBe('readwrite');
     });
 
     it('should add read-only rule for work group "r" members', () => {
@@ -220,9 +225,11 @@ describe('Permissions', () => {
       });
 
       const perms = resolveUserPermissions(user.userId);
-      const lastRule = perms.rules[perms.rules.length - 1];
-      expect(lastRule.action).toBe('allow');
-      expect(lastRule.access).toBe('read');
+      // 工作组规则在安全 deny 规则之前，查找包含 workgroups 路径的 allow 规则。
+      const wgRule = perms.rules.find((r) => r.path.includes('workgroups/team-beta/workspace'));
+      expect(wgRule).toBeDefined();
+      expect(wgRule!.action).toBe('allow');
+      expect(wgRule!.access).toBe('read');
     });
   });
 

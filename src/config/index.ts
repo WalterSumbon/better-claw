@@ -136,6 +136,15 @@ export function reloadConfig(): ReloadConfigResult {
 }
 
 /**
+ * 获取当前配置文件的路径。
+ *
+ * @returns 配置文件绝对路径，未加载时返回 null。
+ */
+export function getConfigFilePath(): string | null {
+  return configFilePath;
+}
+
+/**
  * 清除缓存的配置（仅用于测试）。
  */
 export function resetConfig(): void {

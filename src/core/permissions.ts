@@ -1,6 +1,7 @@
 import { resolve } from 'path';
+import { homedir } from 'os';
 import type { CanUseTool, SandboxSettings } from '@anthropic-ai/claude-agent-sdk';
-import { getConfig } from '../config/index.js';
+import { getConfig, getConfigFilePath } from '../config/index.js';
 import { getUserDir, getUserWorkspacePath, getWorkGroupWorkspacePath } from '../user/store.js';
 import { readProfile } from '../user/store.js';
 import type { ResolvedPermissions, ResolvedRule } from './permissions-types.js';
@@ -122,6 +123,13 @@ export function resolveUserPermissions(userId: string): ResolvedPermissions {
       }
     }
   }
+
+  // 追加不可覆盖的安全 deny 规则（放在最末尾，"last matching rule wins"）。
+  const configFile = getConfigFilePath();
+  if (configFile) {
+    rules.push({ action: 'deny', access: 'readwrite', path: resolve(configFile) });
+  }
+  rules.push({ action: 'deny', access: 'readwrite', path: resolve(homedir(), '.claude') });
 
   return { isAdmin: false, rules };
 }

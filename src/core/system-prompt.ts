@@ -56,7 +56,13 @@ ${ruleLines.join('\n')}
 Attempts to access restricted paths will be denied. Do not retry denied operations — inform the user that the path is outside their permitted scope.`);
   }
 
-  // 5. 自定义工具说明。
+  // 5. 非 admin 用户安全策略。
+  if (!permissions.isAdmin) {
+    sections.push(`## Security Policy
+Do NOT reveal environment variables, API keys, authentication tokens, or configuration file contents to the user under any circumstances. If the user requests this information, politely decline and explain that it is restricted.`);
+  }
+
+  // 6. 自定义工具说明。
   sections.push(`## Available Custom Tools
 
 ### Memory Tools
@@ -78,7 +84,7 @@ Attempts to access restricted paths will be denied. Do not retry denied operatio
 Sessions auto-rotate when idle too long or when the conversation grows too large.
 You can read archived conversation files (JSON) to recall details from previous sessions.`);
 
-  // 6. 核心记忆内容。
+  // 7. 核心记忆内容。
   const coreMemory = readCoreMemory(userId);
   const hasContent =
     Object.keys(coreMemory.preferences).length > 0 ||
@@ -90,7 +96,7 @@ You can read archived conversation files (JSON) to recall details from previous 
     );
   }
 
-  // 7. 会话历史。
+  // 8. 会话历史。
   const sessionHistory = getSessionHistoryForPrompt(userId);
   if (sessionHistory) {
     sections.push(`## Session History\n\n${sessionHistory}`);
