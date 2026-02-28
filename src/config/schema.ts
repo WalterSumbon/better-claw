@@ -90,6 +90,50 @@ const DingtalkConfigSchema = z.object({
   commandPrefix: z.string().default('.'),
 });
 
+/** 单条权限规则 schema。 */
+const PermissionRuleSchema = z.object({
+  /** 动作：允许或拒绝。 */
+  action: z.enum(['allow', 'deny']),
+  /** 访问类型：读、写、或读写。 */
+  access: z.enum(['read', 'write', 'readwrite']),
+  /** 目标路径（支持 ${userWorkspace} 等变量，"*" 匹配所有路径）。 */
+  path: z.string(),
+});
+
+/** 权限组配置 schema。 */
+const PermissionGroupConfigSchema = z.object({
+  /** 继承的父权限组名称（默认 "admin"，即完全可读可写）。 */
+  inherits: z.string().optional(),
+  /** 有序规则列表，从上到下依次生效，最后匹配的规则决定结果。 */
+  rules: z.array(PermissionRuleSchema).optional(),
+});
+
+/** 工作组配置 schema。 */
+const WorkGroupConfigSchema = z.object({
+  /** 成员映射：userId → 权限级别（'r' 只读 / 'rw' 读写）。 */
+  members: z.record(z.string(), z.enum(['r', 'rw'])),
+});
+
+/** 权限系统配置 schema。 */
+const PermissionsConfigSchema = z.object({
+  /** 权限组定义（键为组名，值为组配置）。 */
+  groups: z.record(z.string(), PermissionGroupConfigSchema).default(() => ({
+    admin: {},
+    user: {
+      rules: [
+        { action: 'deny' as const, access: 'write' as const, path: '*' },
+        { action: 'deny' as const, access: 'readwrite' as const, path: '${dataDir}' },
+        { action: 'allow' as const, access: 'read' as const, path: '${userDir}' },
+        { action: 'allow' as const, access: 'readwrite' as const, path: '${userWorkspace}' },
+      ],
+    },
+  })),
+  /** 工作组定义（可选）。 */
+  workGroups: z.record(z.string(), WorkGroupConfigSchema).optional(),
+  /** 用户默认权限组（未在 profile 中指定时使用）。 */
+  defaultGroup: z.string().default('user'),
+});
+
 /** 语音转文字配置。 */
 const SpeechToTextConfigSchema = z.object({
   /** whisper 可执行文件路径。 */
@@ -125,7 +169,22 @@ export const AppConfigSchema = z.object({
   /** Agent 权限模式。 */
   permissionMode: z
     .enum(['default', 'acceptEdits', 'bypassPermissions'])
-    .default('bypassPermissions'),
+    .default('default'),
+  /** 文件系统权限隔离配置。 */
+  permissions: PermissionsConfigSchema.default(() => ({
+    groups: {
+      admin: {},
+      user: {
+        rules: [
+          { action: 'deny' as const, access: 'write' as const, path: '*' },
+          { action: 'deny' as const, access: 'readwrite' as const, path: '${dataDir}' },
+          { action: 'allow' as const, access: 'read' as const, path: '${userDir}' },
+          { action: 'allow' as const, access: 'readwrite' as const, path: '${userWorkspace}' },
+        ],
+      },
+    },
+    defaultGroup: 'user',
+  })),
   /** 会话管理配置。 */
   session: SessionConfigSchema.default(() => ({
     rotationTimeoutHours: 4,

@@ -124,11 +124,132 @@ dataDir: "data"
 # ----------------------------------------------------------------------------
 # 控制 agent 执行文件操作和 shell 命令时的权限策略。
 # 可选值：
-#   - "default"：每次操作需用户确认（最安全，适合不信任的环境）
+#   - "default"：结合 permissions 配置进行路径级权限检查（推荐多用户环境）
 #   - "acceptEdits"：自动允许文件编辑，shell 命令仍需确认
 #   - "bypassPermissions"：跳过所有权限检查（最方便，适合私有部署）
-# 默认值："bypassPermissions"
-permissionMode: "bypassPermissions"
+# 默认值："default"
+permissionMode: "default"
+
+# ----------------------------------------------------------------------------
+# 文件系统权限隔离配置
+# ----------------------------------------------------------------------------
+# 多用户环境下的文件系统访问控制。通过「权限组」和「工作组」两个维度隔离用户。
+#
+# ── 核心概念 ──
+#
+# 权限组（Permission Group）：
+#   - 每个用户属于且仅属于一个权限组（通过 profile.permissionGroup 指定，或使用 defaultGroup）。
+#   - 每组包含一个有序的规则列表（rules），从上到下依次匹配。
+#   - 基础状态为"完全可读可写"（继承自 admin），规则逐条覆盖。
+#   - 最后一条匹配的规则决定最终结果。
+#   - 支持 inherits 继承另一个组的规则（默认继承 admin）。
+#
+# 工作组（Work Group）：
+#   - 用于跨用户协作，共享一个 workspace 目录。
+#   - 成员以 "rw"（读写）或 "r"（只读）权限加入。
+#   - 一个用户可以同时属于多个工作组。
+#
+# ── 规则评估流程 ──
+#
+#   1. 从继承链的根（admin = 全部允许）开始。
+#   2. 父组规则先生效，子组规则后生效（越具体的组越靠后，优先级越高）。
+#   3. 工作组规则追加在最末尾。
+#   4. 对于某次路径访问，从上到下扫描所有规则，最后命中的规则决定 allow / deny。
+#
+# ── 双层隔离 ──
+#
+#   1. canUseTool 回调 — 对 Read/Write/Edit/Glob/Grep 等内置工具做路径级检查。
+#   2. Sandbox（OS 级）— 对 Bash 命令做进程级沙箱隔离。
+#
+permissions:
+  # --------------------------------------------------------------------------
+  # 权限组定义
+  # --------------------------------------------------------------------------
+  # 每个键是组名，值是该组的配置。
+  #
+  # 组配置字段：
+  #   inherits: 继承的父组名（可选，默认 "admin"）。
+  #   rules:    有序规则列表（可选，admin 组通常为空）。
+  #
+  # 单条规则字段：
+  #   action: "allow" 或 "deny"
+  #   access: "read"、"write" 或 "readwrite"
+  #   path:   目标路径，支持以下变量（运行时自动替换为绝对路径）：
+  #             ${userWorkspace} — 当前用户的 workspace（<dataDir>/users/<userId>/workspace/）
+  #             ${userDir}       — 当前用户的数据目录（<dataDir>/users/<userId>/）
+  #             ${dataDir}       — 全局数据目录（<dataDir>/）
+  #           特殊值 "*" 匹配所有路径。
+  #
+  groups:
+    # 管理员组：无规则 = 完全可读可写，所有权限组的默认继承源。
+    admin: {}
+
+    # 普通用户组：
+    #   从 admin 继承（完全可读可写），然后逐条收紧：
+    #   1. 禁止写入所有路径（全局只读，阻止全局安装、修改系统文件等）。
+    #   2. 禁止整个数据目录的读写（隔离其他用户的数据、日志等）。
+    #   3. 允许读取自己的用户目录（profile、memory 等）。
+    #   4. 允许读写自己的 workspace（agent 工作区，包管理器局部安装在此进行）。
+    user:
+      # inherits: "admin"  # 可省略，默认就是 admin
+      rules:
+        - action: deny
+          access: write
+          path: "*"
+        - action: deny
+          access: readwrite
+          path: "${dataDir}"
+        - action: allow
+          access: read
+          path: "${userDir}"
+        - action: allow
+          access: readwrite
+          path: "${userWorkspace}"
+
+    # ── 自定义权限组示例 ──
+
+    # 开发者组：继承 user 的所有规则，再额外开放 /opt/projects 的读写。
+    # developer:
+    #   inherits: "user"
+    #   rules:
+    #     - action: allow
+    #       access: readwrite
+    #       path: "/opt/projects"
+
+    # 访客组：只能读自己的 workspace，不能写任何地方。
+    # guest:
+    #   rules:
+    #     - action: deny
+    #       access: readwrite
+    #       path: "*"
+    #     - action: allow
+    #       access: read
+    #       path: "${userWorkspace}"
+
+  # --------------------------------------------------------------------------
+  # 工作组定义（可选）
+  # --------------------------------------------------------------------------
+  # 每个工作组拥有一个共享 workspace：<dataDir>/workgroups/<groupName>/workspace/
+  # 目录会在首次访问时自动创建。
+  # 成员权限会作为额外的 allow 规则追加到规则链末尾。
+  # 一个用户可以同时属于多个工作组。
+  #
+  # workGroups:
+  #   team-alpha:
+  #     members:
+  #       user_abc123: "rw"    # 读写权限
+  #       user_def456: "r"     # 只读权限
+  #   team-beta:
+  #     members:
+  #       user_abc123: "r"
+  #       user_ghi789: "rw"
+
+  # --------------------------------------------------------------------------
+  # 默认权限组
+  # --------------------------------------------------------------------------
+  # 用户 profile 中未指定 permissionGroup 时使用此组。
+  # 默认值："user"
+  defaultGroup: "user"
 
 # ----------------------------------------------------------------------------
 # 会话管理配置

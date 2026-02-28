@@ -17,6 +17,7 @@ import {
   updateSessionAfterQuery,
 } from './session-manager.js';
 import { getUserWorkspacePath } from '../user/store.js';
+import { buildCanUseTool, buildSandboxSettings } from './permissions.js';
 
 /** 每个用户的 agent 会话状态（内存中）。 */
 interface AgentSession {
@@ -164,11 +165,17 @@ export async function sendToAgent(
     sdkEnv.ANTHROPIC_BASE_URL = config.anthropic.baseUrl;
   }
 
+  const permissionMode = config.permissionMode as 'default' | 'acceptEdits' | 'bypassPermissions';
+
   const options: Parameters<typeof query>[0]['options'] = {
     systemPrompt,
     model: config.anthropic.model,
-    permissionMode: config.permissionMode as 'default' | 'acceptEdits' | 'bypassPermissions',
-    allowDangerouslySkipPermissions: config.permissionMode === 'bypassPermissions',
+    permissionMode,
+    ...(permissionMode === 'bypassPermissions'
+      ? { allowDangerouslySkipPermissions: true }
+      : {}),
+    canUseTool: buildCanUseTool(userId),
+    sandbox: buildSandboxSettings(userId),
     env: sdkEnv,
     mcpServers: {
       'better-claw': getMcpServer(),

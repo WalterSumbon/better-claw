@@ -1,9 +1,15 @@
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 import { isAbsolute, resolve } from 'path';
-import { parse as parseYaml } from 'yaml';
+import { parse as parseYaml, parseDocument } from 'yaml';
 import { AppConfigSchema, type AppConfig } from './schema.js';
 
+/** 工作组配置类型。 */
+export interface WorkGroupConfig {
+  members: Record<string, 'r' | 'rw'>;
+}
+
 let cachedConfig: AppConfig | null = null;
+let configFilePath: string | null = null;
 
 /** loadConfig 选项。 */
 export interface LoadConfigOptions {
@@ -31,6 +37,7 @@ export function loadConfig(options?: LoadConfigOptions): AppConfig {
   const filePath = options?.configPath
     ?? resolve(process.cwd(), cliDataDir ?? 'data', 'config.yaml');
 
+  configFilePath = filePath;
   const raw = readFileSync(filePath, 'utf-8');
   const parsed = parseYaml(raw) ?? {};
   cachedConfig = AppConfigSchema.parse(parsed);
@@ -70,6 +77,7 @@ export function getConfig(): AppConfig {
  */
 export function resetConfig(): void {
   cachedConfig = null;
+  configFilePath = null;
 }
 
 /**
@@ -79,4 +87,44 @@ export function resetConfig(): void {
  */
 export function setConfig(config: AppConfig): void {
   cachedConfig = config;
+}
+
+/**
+ * 读取并返回当前 workGroups 配置。
+ *
+ * @returns 工作组配置映射，未定义时返回空对象。
+ */
+export function getWorkGroups(): Record<string, WorkGroupConfig> {
+  const config = getConfig();
+  return (config.permissions.workGroups ?? {}) as Record<string, WorkGroupConfig>;
+}
+
+/**
+ * 更新 workGroups 配置并持久化到 config.yaml。
+ * 使用 parseDocument 保留原文件的注释和格式。
+ *
+ * @param workGroups - 新的工作组配置映射。
+ * @throws 配置文件路径未知时抛出错误。
+ */
+export function updateWorkGroups(workGroups: Record<string, WorkGroupConfig>): void {
+  if (!configFilePath) {
+    throw new Error('Config file path unknown. Call loadConfig() first.');
+  }
+
+  // 更新内存缓存。
+  const config = getConfig();
+  config.permissions.workGroups = Object.keys(workGroups).length > 0 ? workGroups : undefined;
+
+  // 使用 parseDocument 解析原文件以保留注释。
+  const raw = readFileSync(configFilePath, 'utf-8');
+  const doc = parseDocument(raw);
+
+  // 设置 permissions.workGroups 节点。
+  if (Object.keys(workGroups).length > 0) {
+    doc.setIn(['permissions', 'workGroups'], workGroups);
+  } else {
+    doc.deleteIn(['permissions', 'workGroups']);
+  }
+
+  writeFileSync(configFilePath, doc.toString(), 'utf-8');
 }

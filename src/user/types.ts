@@ -23,4 +23,6 @@ export interface UserProfile {
   bindings: PlatformBinding[];
   /** 创建时间（ISO 8601）。 */
   createdAt: string;
+  /** 所属权限组（不指定时使用 config.permissions.defaultGroup）。 */
+  permissionGroup?: string;
 }

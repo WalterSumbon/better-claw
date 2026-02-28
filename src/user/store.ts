@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { readdirSync, existsSync } from 'fs';
+import { readdirSync, existsSync, rmSync } from 'fs';
 import { getConfig } from '../config/index.js';
 import { readJsonFile, writeJsonFile, ensureDir } from '../utils/file.js';
 import type { UserProfile } from './types.js';
@@ -32,6 +32,29 @@ export function getUserDir(userId: string): string {
  */
 export function getUserWorkspacePath(userId: string): string {
   const wsDir = join(getUserDir(userId), 'workspace');
+  ensureDir(wsDir);
+  return wsDir;
+}
+
+/**
+ * 获取指定工作组的数据目录。
+ *
+ * @param groupName - 工作组名称。
+ * @returns 工作组数据目录路径。
+ */
+export function getWorkGroupDir(groupName: string): string {
+  return join(getConfig().dataDir, 'workgroups', groupName);
+}
+
+/**
+ * 获取指定工作组的共享 workspace 目录。
+ * 自动确保目录存在。
+ *
+ * @param groupName - 工作组名称。
+ * @returns 工作组 workspace 目录的绝对路径。
+ */
+export function getWorkGroupWorkspacePath(groupName: string): string {
+  const wsDir = join(getWorkGroupDir(groupName), 'workspace');
   ensureDir(wsDir);
   return wsDir;
 }
@@ -72,6 +95,18 @@ export function listUserIds(): string[] {
   return readdirSync(usersDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
+}
+
+/**
+ * 递归删除指定用户的数据目录。
+ *
+ * @param userId - 用户 ID。
+ */
+export function deleteUserDir(userId: string): void {
+  const dir = getUserDir(userId);
+  if (existsSync(dir)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /**

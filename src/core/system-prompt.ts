@@ -1,6 +1,7 @@
 import { getUser } from '../user/manager.js';
 import { readCoreMemory } from '../memory/manager.js';
 import { getSessionHistoryForPrompt } from './session-manager.js';
+import { resolveUserPermissions } from './permissions.js';
 
 /**
  * 为指定用户构建完整的 system prompt。
@@ -40,7 +41,22 @@ Because tool calls are invisible to the user, always include a brief text messag
     sections.push(`Current user: ${user.name} (ID: ${user.userId})`);
   }
 
-  // 4. 自定义工具说明。
+  // 4. 文件系统权限范围。
+  const permissions = resolveUserPermissions(userId);
+  if (permissions.isAdmin) {
+    sections.push(`## File Access Permissions\nYou have admin privileges with unrestricted file system access.`);
+  } else {
+    const ruleLines = permissions.rules.map(
+      (r) => `- ${r.action} ${r.access} ${r.path}`,
+    );
+    sections.push(`## File Access Permissions
+Your file access starts as fully permitted (inherited from admin), then the following rules are applied in order (last matching rule wins):
+${ruleLines.join('\n')}
+
+Attempts to access restricted paths will be denied. Do not retry denied operations — inform the user that the path is outside their permitted scope.`);
+  }
+
+  // 5. 自定义工具说明。
   sections.push(`## Available Custom Tools
 
 ### Memory Tools
@@ -62,7 +78,7 @@ Because tool calls are invisible to the user, always include a brief text messag
 Sessions auto-rotate when idle too long or when the conversation grows too large.
 You can read archived conversation files (JSON) to recall details from previous sessions.`);
 
-  // 5. 核心记忆内容。
+  // 6. 核心记忆内容。
   const coreMemory = readCoreMemory(userId);
   const hasContent =
     Object.keys(coreMemory.preferences).length > 0 ||
@@ -74,7 +90,7 @@ You can read archived conversation files (JSON) to recall details from previous 
     );
   }
 
-  // 6. 会话历史。
+  // 7. 会话历史。
   const sessionHistory = getSessionHistoryForPrompt(userId);
   if (sessionHistory) {
     sections.push(`## Session History\n\n${sessionHistory}`);

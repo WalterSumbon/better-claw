@@ -1,5 +1,6 @@
 import { generateUserToken, generateId } from '../utils/token.js';
-import { readProfile, writeProfile, readAllProfiles } from './store.js';
+import { readProfile, writeProfile, readAllProfiles, deleteUserDir } from './store.js';
+import { getWorkGroups, updateWorkGroups } from '../config/index.js';
 import type { UserProfile, PlatformType } from './types.js';
 
 /** 平台用户 → 系统用户 ID 的内存缓存。 */
@@ -118,4 +119,75 @@ export function getUser(userId: string): UserProfile | null {
  */
 export function listUsers(): UserProfile[] {
   return readAllProfiles();
+}
+
+/**
+ * 删除用户及其所有数据。
+ * 包括：profile、数据目录、绑定缓存、所有工作组中的成员记录。
+ *
+ * @param userId - 用户 ID。
+ * @returns 被删除的用户档案，用户不存在时返回 null。
+ */
+export function deleteUser(userId: string): UserProfile | null {
+  const profile = readProfile(userId);
+  if (!profile) {
+    return null;
+  }
+
+  // 从绑定缓存中移除所有绑定。
+  for (const binding of profile.bindings) {
+    bindingCache.delete(bindingKey(binding.platform, binding.platformUserId));
+  }
+
+  // 从所有工作组中移除该用户。
+  const workGroups = getWorkGroups();
+  let workGroupsChanged = false;
+  for (const group of Object.values(workGroups)) {
+    if (userId in group.members) {
+      delete group.members[userId];
+      workGroupsChanged = true;
+    }
+  }
+  if (workGroupsChanged) {
+    updateWorkGroups(workGroups);
+  }
+
+  // 递归删除用户数据目录。
+  deleteUserDir(userId);
+
+  return profile;
+}
+
+/**
+ * 重命名用户（修改显示名称）。
+ *
+ * @param userId - 用户 ID。
+ * @param newName - 新的显示名称。
+ * @returns 更新后的用户档案，用户不存在时返回 null。
+ */
+export function renameUser(userId: string, newName: string): UserProfile | null {
+  const profile = readProfile(userId);
+  if (!profile) {
+    return null;
+  }
+  profile.name = newName;
+  writeProfile(profile);
+  return profile;
+}
+
+/**
+ * 设置用户的权限组。
+ *
+ * @param userId - 用户 ID。
+ * @param group - 权限组名称。
+ * @returns 更新后的用户档案，用户不存在时返回 null。
+ */
+export function setPermissionGroup(userId: string, group: string): UserProfile | null {
+  const profile = readProfile(userId);
+  if (!profile) {
+    return null;
+  }
+  profile.permissionGroup = group;
+  writeProfile(profile);
+  return profile;
 }
