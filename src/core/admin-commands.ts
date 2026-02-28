@@ -8,7 +8,7 @@ import {
   setPermissionGroup,
   bindPlatform,
 } from '../user/manager.js';
-import { getWorkGroups, updateWorkGroups } from '../config/index.js';
+import { getWorkGroups, updateWorkGroups, reloadConfig } from '../config/index.js';
 import { getWorkGroupDir } from '../user/store.js';
 import type { PlatformType } from '../user/types.js';
 
@@ -347,6 +347,9 @@ const HELP_TEXT = [
   '  workgroup remove-member <name> <userId>',
   '  workgroup set-access <name> <userId> <access>',
   '  workgroup members <name>',
+  '',
+  'System commands:',
+  '  reload-config    Hot-reload config.yaml (adapters and logging require restart)',
 ].join('\n');
 
 /**
@@ -378,10 +381,28 @@ export function handleAdminCommand(args: string): string {
       }
       return handleWorkgroupCommand(sub, rest);
 
+    case 'reload-config': {
+      try {
+        const result = reloadConfig();
+        const lines: string[] = [];
+        if (result.reloaded.length > 0) {
+          lines.push(`Reloaded: ${result.reloaded.join(', ')}`);
+        } else {
+          lines.push('No config changes detected.');
+        }
+        if (result.requireRestart.length > 0) {
+          lines.push(`Require restart to take effect: ${result.requireRestart.join(', ')}`);
+        }
+        return lines.join('\n');
+      } catch (err) {
+        return `Failed to reload config: ${(err as Error).message}`;
+      }
+    }
+
     case 'help':
       return HELP_TEXT;
 
     default:
-      return `Unknown domain: ${domain}\nAvailable: user, workgroup\nUse "/admin help" for full usage.`;
+      return `Unknown domain: ${domain}\nAvailable: user, workgroup, reload-config\nUse "/admin help" for full usage.`;
   }
 }

@@ -87,6 +87,40 @@ Playwright 和 Peekaboo 需要在 `~/.claude/settings.json` 中配置对应的 M
 | `/restart` | 重启整个服务进程（由外层进程管理器重新拉起） |
 | `/admin <subcommand>` | 管理员命令，支持用户管理和工作组管理（仅 admin 用户可用，详见 `/admin help`） |
 
+### /admin 命令
+
+仅 `permissionGroup === 'admin'` 的用户可使用。支持以下子命令：
+
+- **用户管理**：`user create/list/info/rename/set-group/delete/bind`
+- **工作组管理**：`workgroup create/delete/list/info/add-member/remove-member/set-access/members`
+- **配置热重载**：`reload-config`
+
+发送 `/admin help` 查看完整用法。
+
+#### 配置热重载
+
+`/admin reload-config` 会重新读取 `config.yaml` 并更新内存中的配置，无需重启服务。
+
+可热重载的字段：
+
+| 字段 | 说明 |
+|------|------|
+| `anthropic` | API 配置（model、apiKey、authToken、baseUrl、maxBudgetUsd） |
+| `permissions` | 权限组、默认组、工作组定义 |
+| `session` | 会话轮转阈值、摘要开关等 |
+| `restart` | 重启权限 |
+| `messagePush` | 中间消息推送 |
+| `speechToText` | 语音转文字配置 |
+| `permissionMode` | Agent 权限模式 |
+
+不可热重载（需要 `/restart`）：
+
+| 字段 | 原因 |
+|------|------|
+| `telegram` / `dingtalk` | 适配器连接已建立 |
+| `logging` | Logger 已初始化 |
+| `dataDir` | 路径已解析 |
+
 ## CLI 工具
 
 所有子命令都支持 `--data-dir`（简写 `-d`）指定数据目录。

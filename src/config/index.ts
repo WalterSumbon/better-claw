@@ -72,6 +72,69 @@ export function getConfig(): AppConfig {
   return cachedConfig;
 }
 
+/** 可热重载的配置字段列表。 */
+const HOT_RELOADABLE_KEYS = [
+  'anthropic',
+  'permissions',
+  'session',
+  'restart',
+  'messagePush',
+  'speechToText',
+  'permissionMode',
+] as const;
+
+/** 不可热重载的配置字段列表（需要重启）。 */
+const NON_RELOADABLE_KEYS = ['telegram', 'dingtalk', 'logging', 'dataDir'] as const;
+
+/** reloadConfig 返回的结果摘要。 */
+export interface ReloadConfigResult {
+  /** 已更新的字段列表。 */
+  reloaded: string[];
+  /** 需要重启才能生效的字段列表（仅当这些字段发生了变化时包含）。 */
+  requireRestart: string[];
+}
+
+/**
+ * 热重载配置文件。重新读取 config.yaml 并更新内存缓存中可热重载的字段。
+ * 适配器连接（telegram/dingtalk）和日志配置不会被更新，需要重启。
+ *
+ * @returns 重载结果摘要。
+ * @throws 配置文件未加载或校验失败时抛出错误。
+ */
+export function reloadConfig(): ReloadConfigResult {
+  if (!configFilePath || !cachedConfig) {
+    throw new Error('Config not loaded. Call loadConfig() first.');
+  }
+
+  const raw = readFileSync(configFilePath, 'utf-8');
+  const parsed = parseYaml(raw) ?? {};
+  const newConfig = AppConfigSchema.parse(parsed);
+
+  const reloaded: string[] = [];
+  const requireRestart: string[] = [];
+
+  // 更新可热重载的字段。
+  for (const key of HOT_RELOADABLE_KEYS) {
+    const oldVal = JSON.stringify(cachedConfig[key]);
+    const newVal = JSON.stringify(newConfig[key]);
+    if (oldVal !== newVal) {
+      (cachedConfig as Record<string, unknown>)[key] = newConfig[key];
+      reloaded.push(key);
+    }
+  }
+
+  // 检测不可热重载的字段是否有变化。
+  for (const key of NON_RELOADABLE_KEYS) {
+    const oldVal = JSON.stringify(cachedConfig[key]);
+    const newVal = JSON.stringify(newConfig[key]);
+    if (oldVal !== newVal) {
+      requireRestart.push(key);
+    }
+  }
+
+  return { reloaded, requireRestart };
+}
+
 /**
  * 清除缓存的配置（仅用于测试）。
  */
