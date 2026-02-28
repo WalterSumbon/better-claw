@@ -11,7 +11,12 @@ import {
   listUsers,
   getUser,
   bindPlatform,
+  deleteUser,
+  renameUser,
+  setPermissionGroup,
 } from './user/manager.js';
+import { getWorkGroups, updateWorkGroups } from './config/index.js';
+import type { WorkGroupConfig } from './config/index.js';
 import type { PlatformType } from './user/types.js';
 import { exportData, importData, hasExistingData } from './data/migrate.js';
 
@@ -86,11 +91,11 @@ userCmd
   .command('bind')
   .description('Bind a platform account to a user')
   .requiredOption('-t, --token <token>', 'User secret token')
-  .requiredOption('-p, --platform <platform>', 'Platform name (telegram, cli, qq, wechat)')
+  .requiredOption('-p, --platform <platform>', 'Platform name (telegram, cli, qq, wechat, dingtalk)')
   .requiredOption('-u, --platform-user-id <id>', 'Platform user ID')
   .action((opts: { token: string; platform: string; platformUserId: string }) => {
     initEnv(program.opts().dataDir);
-    const validPlatforms = ['telegram', 'cli', 'qq', 'wechat'];
+    const validPlatforms = ['telegram', 'cli', 'qq', 'wechat', 'dingtalk'];
     if (!validPlatforms.includes(opts.platform)) {
       console.error(`Invalid platform: ${opts.platform}. Must be one of: ${validPlatforms.join(', ')}`);
       process.exit(1);
@@ -101,6 +106,261 @@ userCmd
     } else {
       console.error('Invalid token.');
       process.exit(1);
+    }
+  });
+
+userCmd
+  .command('set-group')
+  .description('Set user permission group')
+  .argument('<userId>', 'User ID')
+  .argument('<group>', 'Permission group name')
+  .action((userId: string, group: string) => {
+    initEnv(program.opts().dataDir);
+    const profile = setPermissionGroup(userId, group);
+    if (!profile) {
+      console.error(`User not found: ${userId}`);
+      process.exit(1);
+    }
+    console.log(`User ${profile.userId} (${profile.name}) permission group set to "${group}".`);
+  });
+
+userCmd
+  .command('delete')
+  .description('Delete a user and all associated data')
+  .argument('<userId>', 'User ID')
+  .action(async (userId: string) => {
+    initEnv(program.opts().dataDir);
+    const user = getUser(userId);
+    if (!user) {
+      console.error(`User not found: ${userId}`);
+      process.exit(1);
+    }
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((res) => {
+      rl.question(
+        `Are you sure? This will delete all data for user ${user.name} (${userId}). [y/N] `,
+        res,
+      );
+    });
+    rl.close();
+    if (answer.toLowerCase() !== 'y') {
+      console.log('Cancelled.');
+      return;
+    }
+
+    deleteUser(userId);
+    console.log(`User ${userId} (${user.name}) deleted.`);
+  });
+
+userCmd
+  .command('rename')
+  .description('Rename a user (change display name)')
+  .argument('<userId>', 'User ID')
+  .argument('<newName>', 'New display name')
+  .action((userId: string, newName: string) => {
+    initEnv(program.opts().dataDir);
+    const profile = renameUser(userId, newName);
+    if (!profile) {
+      console.error(`User not found: ${userId}`);
+      process.exit(1);
+    }
+    console.log(`User ${profile.userId} renamed to "${profile.name}".`);
+  });
+
+// --- workgroup 子命令组 ---
+
+const workgroupCmd = program.command('workgroup').description('Work group management');
+
+workgroupCmd
+  .command('create')
+  .description('Create a new work group')
+  .argument('<name>', 'Work group name')
+  .action((name: string) => {
+    initEnv(program.opts().dataDir);
+    const workGroups = getWorkGroups();
+    if (workGroups[name]) {
+      console.error(`Work group already exists: ${name}`);
+      process.exit(1);
+    }
+    workGroups[name] = { members: {} };
+    updateWorkGroups(workGroups);
+    console.log(`Work group "${name}" created.`);
+  });
+
+workgroupCmd
+  .command('delete')
+  .description('Delete a work group')
+  .argument('<name>', 'Work group name')
+  .action(async (name: string) => {
+    initEnv(program.opts().dataDir);
+    const workGroups = getWorkGroups();
+    if (!workGroups[name]) {
+      console.error(`Work group not found: ${name}`);
+      process.exit(1);
+    }
+
+    const memberCount = Object.keys(workGroups[name].members).length;
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((res) => {
+      rl.question(
+        `Are you sure? This will delete work group "${name}" (${memberCount} members) and its workspace. [y/N] `,
+        res,
+      );
+    });
+    rl.close();
+    if (answer.toLowerCase() !== 'y') {
+      console.log('Cancelled.');
+      return;
+    }
+
+    delete workGroups[name];
+    updateWorkGroups(workGroups);
+
+    // 删除工作组的数据目录。
+    const { rmSync, existsSync } = await import('fs');
+    const { getWorkGroupDir } = await import('./user/store.js');
+    const groupDir = getWorkGroupDir(name);
+    if (existsSync(groupDir)) {
+      rmSync(groupDir, { recursive: true, force: true });
+    }
+
+    console.log(`Work group "${name}" deleted.`);
+  });
+
+workgroupCmd
+  .command('list')
+  .description('List all work groups')
+  .action(() => {
+    initEnv(program.opts().dataDir);
+    const workGroups = getWorkGroups();
+    const names = Object.keys(workGroups);
+    if (names.length === 0) {
+      console.log('No work groups found.');
+      return;
+    }
+    for (const name of names) {
+      const memberCount = Object.keys(workGroups[name].members).length;
+      console.log(`${name}  members=${memberCount}`);
+    }
+  });
+
+workgroupCmd
+  .command('info')
+  .description('Show details of a work group')
+  .argument('<name>', 'Work group name')
+  .action((name: string) => {
+    initEnv(program.opts().dataDir);
+    const workGroups = getWorkGroups();
+    if (!workGroups[name]) {
+      console.error(`Work group not found: ${name}`);
+      process.exit(1);
+    }
+    const group = workGroups[name];
+    console.log(`Work group: ${name}`);
+    const entries = Object.entries(group.members);
+    if (entries.length === 0) {
+      console.log('  No members.');
+    } else {
+      console.log('  Members:');
+      for (const [userId, access] of entries) {
+        console.log(`    ${userId}  access=${access}`);
+      }
+    }
+  });
+
+workgroupCmd
+  .command('add-member')
+  .description('Add a member to a work group')
+  .argument('<name>', 'Work group name')
+  .argument('<userId>', 'User ID')
+  .option('-a, --access <access>', 'Access level (r or rw)', 'rw')
+  .action((name: string, userId: string, opts: { access: string }) => {
+    initEnv(program.opts().dataDir);
+    const workGroups = getWorkGroups();
+    if (!workGroups[name]) {
+      console.error(`Work group not found: ${name}`);
+      process.exit(1);
+    }
+    if (opts.access !== 'r' && opts.access !== 'rw') {
+      console.error(`Invalid access level: ${opts.access}. Must be "r" or "rw".`);
+      process.exit(1);
+    }
+    const user = getUser(userId);
+    if (!user) {
+      console.error(`User not found: ${userId}`);
+      process.exit(1);
+    }
+    workGroups[name].members[userId] = opts.access as 'r' | 'rw';
+    updateWorkGroups(workGroups);
+    console.log(`Added ${userId} (${user.name}) to "${name}" with access=${opts.access}.`);
+  });
+
+workgroupCmd
+  .command('remove-member')
+  .description('Remove a member from a work group')
+  .argument('<name>', 'Work group name')
+  .argument('<userId>', 'User ID')
+  .action((name: string, userId: string) => {
+    initEnv(program.opts().dataDir);
+    const workGroups = getWorkGroups();
+    if (!workGroups[name]) {
+      console.error(`Work group not found: ${name}`);
+      process.exit(1);
+    }
+    if (!(userId in workGroups[name].members)) {
+      console.error(`User ${userId} is not a member of "${name}".`);
+      process.exit(1);
+    }
+    delete workGroups[name].members[userId];
+    updateWorkGroups(workGroups);
+    console.log(`Removed ${userId} from "${name}".`);
+  });
+
+workgroupCmd
+  .command('set-access')
+  .description('Set access level for a member in a work group')
+  .argument('<name>', 'Work group name')
+  .argument('<userId>', 'User ID')
+  .argument('<access>', 'Access level (r or rw)')
+  .action((name: string, userId: string, access: string) => {
+    initEnv(program.opts().dataDir);
+    const workGroups = getWorkGroups();
+    if (!workGroups[name]) {
+      console.error(`Work group not found: ${name}`);
+      process.exit(1);
+    }
+    if (!(userId in workGroups[name].members)) {
+      console.error(`User ${userId} is not a member of "${name}".`);
+      process.exit(1);
+    }
+    if (access !== 'r' && access !== 'rw') {
+      console.error(`Invalid access level: ${access}. Must be "r" or "rw".`);
+      process.exit(1);
+    }
+    workGroups[name].members[userId] = access as 'r' | 'rw';
+    updateWorkGroups(workGroups);
+    console.log(`Set access for ${userId} in "${name}" to ${access}.`);
+  });
+
+workgroupCmd
+  .command('members')
+  .description('List members of a work group')
+  .argument('<name>', 'Work group name')
+  .action((name: string) => {
+    initEnv(program.opts().dataDir);
+    const workGroups = getWorkGroups();
+    if (!workGroups[name]) {
+      console.error(`Work group not found: ${name}`);
+      process.exit(1);
+    }
+    const entries = Object.entries(workGroups[name].members);
+    if (entries.length === 0) {
+      console.log('No members.');
+      return;
+    }
+    for (const [userId, access] of entries) {
+      console.log(`${userId}  access=${access}`);
     }
   });
 

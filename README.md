@@ -85,6 +85,7 @@ Playwright 和 Peekaboo 需要在 `~/.claude/settings.json` 中配置对应的 M
 | `/stop` | 中断当前正在执行的 AI 响应，队列中的后续消息不受影响 |
 | `/new` | 归档当前会话并开始一个全新会话 |
 | `/restart` | 重启整个服务进程（由外层进程管理器重新拉起） |
+| `/admin <subcommand>` | 管理员命令，支持用户管理和工作组管理（仅 admin 用户可用，详见 `/admin help`） |
 
 ## CLI 工具
 
@@ -95,16 +96,11 @@ Playwright 和 Peekaboo 需要在 `~/.claude/settings.json` 中配置对应的 M
 使用前需要先通过 CLI 创建用户，然后在对话中用 `/bind` 绑定平台账号：
 
 ```bash
-# 1. 创建用户，会输出用户 ID 和 token。
+# 创建用户，会输出用户 ID 和 token。
 npx tsx src/cli.ts user create -n "Alice"
-# 输出：
-#   ID:    <userId>
-#   Name:  Alice
-#   Token: <token>
-#   Use this token to bind platform accounts via /bind <token>
 
-# 2. 在 Telegram 对话中发送 /bind <token> 完成绑定。
-#    也可通过 CLI 直接绑定：
+# 在 Telegram 对话中发送 /bind <token> 完成绑定。
+# 也可通过 CLI 直接绑定（支持 telegram / cli / qq / wechat / dingtalk）：
 npx tsx src/cli.ts user bind -t <token> -p telegram -u <telegramUserId>
 
 # 查看所有用户。
@@ -112,6 +108,46 @@ npx tsx src/cli.ts user list
 
 # 查看用户详情。
 npx tsx src/cli.ts user info <userId>
+
+# 修改显示名称。
+npx tsx src/cli.ts user rename <userId> "Bob"
+
+# 设置权限组。
+npx tsx src/cli.ts user set-group <userId> admin
+
+# 删除用户及其所有数据（交互式确认）。
+npx tsx src/cli.ts user delete <userId>
+```
+
+### 工作组管理
+
+工作组用于跨用户协作，共享一个 workspace 目录。配置持久化在 `config.yaml` 的 `permissions.workGroups` 中。
+
+```bash
+# 创建工作组。
+npx tsx src/cli.ts workgroup create team-alpha
+
+# 添加成员（默认 rw 读写权限，可用 -a r 指定只读）。
+npx tsx src/cli.ts workgroup add-member team-alpha <userId>
+npx tsx src/cli.ts workgroup add-member team-alpha <userId> -a r
+
+# 查看工作组成员。
+npx tsx src/cli.ts workgroup members team-alpha
+
+# 修改成员权限（r 或 rw）。
+npx tsx src/cli.ts workgroup set-access team-alpha <userId> r
+
+# 查看工作组详情。
+npx tsx src/cli.ts workgroup info team-alpha
+
+# 列出所有工作组。
+npx tsx src/cli.ts workgroup list
+
+# 移除成员。
+npx tsx src/cli.ts workgroup remove-member team-alpha <userId>
+
+# 删除工作组及其 workspace（交互式确认）。
+npx tsx src/cli.ts workgroup delete team-alpha
 ```
 
 ### 交互式对话

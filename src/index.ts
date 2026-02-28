@@ -14,6 +14,7 @@ import type { InboundMessage } from './adapter/types.js';
 import type { MessageAdapter } from './adapter/interface.js';
 import type { CronTask } from './cron/types.js';
 import { installSkills } from './utils/install-skills.js';
+import { handleAdminCommand } from './core/admin-commands.js';
 
 /**
  * 从 process.argv 解析 --data-dir 参数。
@@ -121,6 +122,24 @@ async function handleMessage(
           // 延迟退出，确保消息发送完成。外层进程管理器负责重新拉起。
           setTimeout(() => process.kill(process.pid, 'SIGTERM'), 500);
         }
+        return;
+      }
+      case 'admin': {
+        const userId = resolveUser(msg.platform, msg.platformUserId);
+        if (!userId) {
+          await adapter.sendText(
+            msg.platformUserId,
+            `I don't recognize you yet. Use ${adapter.commandPrefix}bind <your-token> to link your account.`,
+          );
+          return;
+        }
+        const profile = getUser(userId);
+        if (!profile || (profile.permissionGroup ?? getConfig().permissions.defaultGroup) !== 'admin') {
+          await adapter.sendText(msg.platformUserId, 'Permission denied. Admin only.');
+          return;
+        }
+        const result = handleAdminCommand(msg.commandArgs?.trim() ?? '');
+        await adapter.sendText(msg.platformUserId, result);
         return;
       }
       case 'new': {
