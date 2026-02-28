@@ -132,6 +132,21 @@ const PermissionsConfigSchema = z.object({
   workGroups: z.record(z.string(), WorkGroupConfigSchema).optional(),
   /** 用户默认权限组（未在 profile 中指定时使用）。 */
   defaultGroup: z.string().default('user'),
+  /** 非 admin 用户传递给 SDK subprocess 时需过滤掉的环境变量名模式列表。
+   *  支持 * 通配符（如 "SECRET_*" 匹配所有以 SECRET_ 开头的变量）。
+   *  默认继承所有环境变量，仅移除匹配的条目。
+   *  SDK 必需的 Anthropic 变量始终从 anthropic 配置注入，不受此过滤影响。 */
+  envFilter: z.array(z.string()).default(() => []),
+  /** 非 admin 用户额外注入的环境变量（键值对）。
+   *  会在过滤之后追加，可用于覆盖或补充变量。 */
+  envExtra: z.record(z.string(), z.string()).default(() => ({})),
+  /** 非 admin 用户自动追加的 deny readwrite 路径列表。
+   *  支持变量：${configFile}（配置文件路径）、${home}（用户主目录）及其他标准变量。
+   *  这些规则追加在规则链最末尾，不可被权限组或工作组规则覆盖。 */
+  protectedPaths: z.array(z.string()).default(() => [
+    '${configFile}',
+    '${home}/.claude',
+  ]),
 });
 
 /** 语音转文字配置。 */
@@ -184,6 +199,9 @@ export const AppConfigSchema = z.object({
       },
     },
     defaultGroup: 'user',
+    envFilter: [] as string[],
+    envExtra: {} as Record<string, string>,
+    protectedPaths: ['${configFile}', '${home}/.claude'],
   })),
   /** 会话管理配置。 */
   session: SessionConfigSchema.default(() => ({

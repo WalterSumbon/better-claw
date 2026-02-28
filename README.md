@@ -63,6 +63,47 @@ npx tsx src/index.ts --data-dir /path/to/my-agent
 | `logging.directory` | 相对路径基于 dataDir 解析，默认 `logs` |
 | `session.rotationTimeoutHours` | 超过此小时数自动开新会话 |
 
+## 权限与安全
+
+多用户环境下，Better-Claw 通过多层机制隔离用户对文件系统和环境变量的访问。
+
+### 权限组
+
+每个用户属于一个权限组（默认 `user`），通过有序规则链控制文件系统访问。规则支持 `${userWorkspace}`、`${userDir}`、`${dataDir}`、`${home}`、`${configFile}` 等变量。详见 [config.example.yaml](config.example.yaml) 的 `permissions.groups` 部分。
+
+### 受保护路径 (`protectedPaths`)
+
+非 admin 用户自动追加 `deny readwrite` 规则到规则链末尾（不可被权限组或工作组覆盖）：
+
+```yaml
+permissions:
+  protectedPaths:
+    - "${configFile}"    # 配置文件本身（含 API Key 等敏感信息）
+    - "${home}/.claude"  # Claude CLI 认证目录
+```
+
+默认保护 `config.yaml` 和 `~/.claude`。设为空数组可禁用（不推荐）。
+
+### 环境变量过滤 (`envFilter` / `envExtra`)
+
+非 admin 用户的 SDK subprocess 默认继承所有环境变量。通过 `envFilter` 可按通配符模式过滤敏感变量，通过 `envExtra` 可额外注入变量：
+
+```yaml
+permissions:
+  envFilter:
+    - "ANTHROPIC_*"  # 过滤所有 ANTHROPIC_ 开头的变量
+    - "AWS_*"
+    - "SECRET_*"
+  envExtra:
+    MY_VAR: "value"  # 额外注入
+```
+
+SDK 必需的 Anthropic 变量始终从 `anthropic` 配置注入，不受 `envFilter` 影响。
+
+### System Prompt 安全策略
+
+非 admin 用户的 agent 会在 system prompt 中被指示不得泄露环境变量、API Key 和配置文件内容，作为纵深防御。
+
 ## 内置 Skills
 
 仓库自带以下 Claude Code skills，启动时自动通过 symlink 安装到 `~/.claude/skills/`：

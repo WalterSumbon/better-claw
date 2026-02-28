@@ -6,6 +6,9 @@ import { getUserDir, getUserWorkspacePath, getWorkGroupWorkspacePath } from '../
 import { readProfile } from '../user/store.js';
 import type { ResolvedPermissions, ResolvedRule } from './permissions-types.js';
 
+/** ${configFile} 占位符，当 configFilePath 为 null 时跳过该条规则。 */
+const CONFIG_FILE_VAR = '${configFile}';
+
 /**
  * 对单个路径字符串执行变量替换。
  *
@@ -13,16 +16,28 @@ import type { ResolvedPermissions, ResolvedRule } from './permissions-types.js';
  * - ${userWorkspace}: 用户 workspace 目录
  * - ${userDir}: 用户数据目录
  * - ${dataDir}: 全局数据目录（绝对路径）
+ * - ${home}: 当前系统用户主目录
+ * - ${configFile}: 配置文件路径（可能为 null，此时返回 null）
  *
  * @param pathStr - 包含变量占位符的路径。
  * @param userId - 当前用户 ID。
- * @returns 替换后的路径字符串。
+ * @returns 替换后的路径字符串，包含 ${configFile} 且无法解析时返回 null。
  */
-export function resolvePathVariable(pathStr: string, userId: string): string {
+export function resolvePathVariable(pathStr: string, userId: string): string | null {
   const config = getConfig();
   const dataDir = resolve(process.cwd(), config.dataDir);
 
+  // ${configFile} 需要特殊处理：路径不存在时整条规则应被跳过。
+  if (pathStr.includes(CONFIG_FILE_VAR)) {
+    const configFile = getConfigFilePath();
+    if (!configFile) {
+      return null;
+    }
+    pathStr = pathStr.replace(/\$\{configFile\}/g, resolve(configFile));
+  }
+
   let result = pathStr;
+  result = result.replace(/\$\{home\}/g, homedir());
   result = result.replace(/\$\{userWorkspace\}/g, getUserWorkspacePath(userId));
   result = result.replace(/\$\{userDir\}/g, getUserDir(userId));
   result = result.replace(/\$\{dataDir\}/g, dataDir);
@@ -99,12 +114,19 @@ export function resolveUserPermissions(userId: string): ResolvedPermissions {
     permConfig.groups as Record<string, { inherits?: string; rules?: Array<{ action: string; access: string; path: string }> }>,
   );
 
-  // 变量替换。
-  const rules: ResolvedRule[] = rawRules.map((r) => ({
-    action: r.action as 'allow' | 'deny',
-    access: r.access as 'read' | 'write' | 'readwrite',
-    path: resolvePathVariable(r.path, userId),
-  }));
+  // 变量替换（resolvePathVariable 返回 null 时跳过该条规则）。
+  const rules: ResolvedRule[] = [];
+  for (const r of rawRules) {
+    const resolvedPath = resolvePathVariable(r.path, userId);
+    if (resolvedPath === null) {
+      continue;
+    }
+    rules.push({
+      action: r.action as 'allow' | 'deny',
+      access: r.access as 'read' | 'write' | 'readwrite',
+      path: resolvedPath,
+    });
+  }
 
   // 合并工作组共享 workspace。
   const workGroups = permConfig.workGroups;
@@ -124,12 +146,15 @@ export function resolveUserPermissions(userId: string): ResolvedPermissions {
     }
   }
 
-  // 追加不可覆盖的安全 deny 规则（放在最末尾，"last matching rule wins"）。
-  const configFile = getConfigFilePath();
-  if (configFile) {
-    rules.push({ action: 'deny', access: 'readwrite', path: resolve(configFile) });
+  // 追加 protectedPaths 中定义的 deny readwrite 规则（最末尾，不可被覆盖）。
+  const protectedPaths = permConfig.protectedPaths ?? [];
+  for (const pp of protectedPaths) {
+    const resolvedPath = resolvePathVariable(pp, userId);
+    if (resolvedPath === null) {
+      continue;
+    }
+    rules.push({ action: 'deny', access: 'readwrite', path: resolvedPath });
   }
-  rules.push({ action: 'deny', access: 'readwrite', path: resolve(homedir(), '.claude') });
 
   return { isAdmin: false, rules };
 }

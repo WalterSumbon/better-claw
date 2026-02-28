@@ -102,23 +102,32 @@ export function isResultMessage(msg: SDKMessage): msg is SDKResultMessage {
   return msg.type === 'result';
 }
 
-/** 非 admin 用户的 env 白名单前缀/名称。 */
-const SAFE_ENV_PREFIXES = [
-  'PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'LC_', 'TERM', 'TMPDIR', 'TZ',
-  'NODE_', 'NPM_',
-];
+/**
+ * 将通配符模式转换为正则表达式。
+ *
+ * 仅支持 * 通配符，匹配任意字符序列。
+ *
+ * @param pattern - 通配符模式（如 "SECRET_*"）。
+ * @returns 编译后的正则表达式。
+ */
+export function globToRegex(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${escaped}$`);
+}
 
 /**
  * 构建传递给 SDK subprocess 的环境变量。
  *
- * admin 用户继承完整 process.env；非 admin 用户仅保留白名单变量，
- * 并从配置中注入 SDK 必需的 Anthropic 变量。
+ * admin 用户继承完整 process.env；非 admin 用户继承 process.env 后，
+ * 按 config.permissions.envFilter 过滤匹配的变量，
+ * 再按 config.permissions.envExtra 追加额外变量，
+ * 最后从配置注入 SDK 必需的 Anthropic 变量。
  *
  * @param userId - 用户 ID。
  * @param config - 应用配置。
  * @returns 环境变量对象。
  */
-function buildSdkEnv(userId: string, config: AppConfig): Record<string, string | undefined> {
+export function buildSdkEnv(userId: string, config: AppConfig): Record<string, string | undefined> {
   const permissions = resolveUserPermissions(userId);
   if (permissions.isAdmin) {
     const env: Record<string, string | undefined> = { ...process.env };
@@ -134,12 +143,18 @@ function buildSdkEnv(userId: string, config: AppConfig): Record<string, string |
     return env;
   }
 
-  // 白名单过滤。
+  // 继承所有环境变量，按 envFilter 过滤。
+  const filterPatterns = config.permissions.envFilter.map(globToRegex);
   const env: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (SAFE_ENV_PREFIXES.some((p) => key === p || key.startsWith(p))) {
+    if (!filterPatterns.some((re) => re.test(key))) {
       env[key] = value;
     }
+  }
+
+  // 追加 envExtra。
+  for (const [key, value] of Object.entries(config.permissions.envExtra)) {
+    env[key] = value;
   }
 
   // SDK 必需的 Anthropic 变量。
