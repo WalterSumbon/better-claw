@@ -55,20 +55,13 @@ export class RateLimitError extends Error {
 /** 用户 ID → 会话状态映射。 */
 const sessions = new Map<string, AgentSession>();
 
-/** 全局 MCP 服务器实例（惰性初始化）。 */
-let mcpServer: ReturnType<typeof createAppMcpServer> | null = null;
-
 /**
- * 获取或创建 MCP 服务器实例。
+ * 创建新的 MCP 服务器实例。
  *
- * @returns MCP 服务器配置。
+ * 每次 query() 调用都需要新实例，因为 SDK 会对 transport 调用 connect()，
+ * 而同一个 Protocol transport 不能被多次 connect。
+ * createAppMcpServer() 本身很轻量（仅构造对象 + 注册工具），无性能问题。
  */
-function getMcpServer() {
-  if (!mcpServer) {
-    mcpServer = createAppMcpServer();
-  }
-  return mcpServer;
-}
 
 /**
  * 获取或创建用户的内存会话状态。
@@ -167,6 +160,7 @@ export function buildSdkEnv(userId: string, config: AppConfig): Record<string, s
   if (config.anthropic.baseUrl) {
     env.ANTHROPIC_BASE_URL = config.anthropic.baseUrl;
   }
+
   return env;
 }
 
@@ -236,7 +230,7 @@ export async function sendToAgent(
     sandbox: buildSandboxSettings(userId),
     env: sdkEnv,
     mcpServers: {
-      'better-claw': getMcpServer(),
+      'better-claw': createAppMcpServer(),
     },
     allowedTools: [
       'mcp__better-claw__memory_read',
@@ -256,6 +250,17 @@ export async function sendToAgent(
     maxBudgetUsd: config.anthropic.maxBudgetUsd,
     thinking: { type: 'adaptive' as const },
     cwd: getUserWorkspacePath(userId),
+  };
+
+  // 捕获 SDK 子进程的 stderr，用于错误诊断。
+  let lastStderr = '';
+  options.stderr = (data: string) => {
+    lastStderr += data;
+    // 只保留最后 2000 字符，避免内存膨胀。
+    if (lastStderr.length > 2000) {
+      lastStderr = lastStderr.slice(-2000);
+    }
+    log.debug({ userId, stderr: data.trim() }, 'SDK stderr');
   };
 
   // 如果有 SDK session ID，尝试 resume。
@@ -288,6 +293,30 @@ export async function sendToAgent(
 
     try {
       for await (const msg of q) {
+        // 记录每条 SDK 消息的类型和关键信息，便于调试。
+        {
+          const m = msg as Record<string, unknown>;
+          const msgType = String(m.type);
+          const subtype = m.subtype ? String(m.subtype) : undefined;
+          const extra: Record<string, unknown> = { userId, msgType };
+          if (subtype) extra.subtype = subtype;
+          if (msgType === 'assistant') {
+            const content = (m.message as Record<string, unknown>)?.content;
+            if (Array.isArray(content)) {
+              extra.blocks = content.map((b: Record<string, unknown>) => b.type);
+            }
+          }
+          if (msgType === 'result') {
+            extra.resultSubtype = subtype;
+            if (m.error) extra.error = m.error;
+            if (m.result) extra.result = typeof m.result === 'string' ? m.result.slice(0, 200) : m.result;
+          }
+          if (msgType === 'system') {
+            extra.status = m.status;
+          }
+          log.debug(extra, 'SDK msg');
+        }
+
         // 捕获 rate_limit_event，记录最新的重置时间。
         if ((msg as { type: string }).type === 'rate_limit_event') {
           const rateLimitMsg = msg as { rate_limit_info?: { resetsAt?: number; status?: string } };
@@ -434,9 +463,10 @@ export async function sendToAgent(
       if (options.resume) {
         const errMsg = err instanceof Error ? err.message : String(err);
         log.warn(
-          { userId, sdkSessionId: options.resume, error: errMsg },
+          { userId, sdkSessionId: options.resume, error: errMsg, stderr: lastStderr.trim() || undefined },
           'Agent query failed with resume, retrying without resume',
         );
+        lastStderr = '';
 
         // 清除内存和持久化的 SDK session ID。
         session.sdkSessionId = null;
@@ -450,6 +480,11 @@ export async function sendToAgent(
         const retryOptions = { ...options };
         delete retryOptions.resume;
         return await executeQuery(retryOptions);
+      }
+      // 非 resume 场景，附加 stderr 后抛出。
+      if (lastStderr.trim()) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        log.error({ userId, error: errMsg, stderr: lastStderr.trim() }, 'Agent query failed');
       }
       throw err;
     }
