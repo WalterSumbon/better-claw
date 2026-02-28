@@ -377,7 +377,6 @@ async function main(): Promise<void> {
   initScheduler((userId: string, task: CronTask) => {
     handleCronTrigger(userId, task);
   });
-  log.info('Cron scheduler initialized');
 
   // 10. 重启后自动恢复对话。
   handlePostRestart();
