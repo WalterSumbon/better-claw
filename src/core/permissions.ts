@@ -275,17 +275,19 @@ export function buildCanUseTool(userId: string): CanUseTool {
   const cwd = getUserWorkspacePath(userId);
 
   return async (toolName, input) => {
+    const allow = () => ({ behavior: 'allow' as const, updatedInput: input });
+
     if (permissions.isAdmin) {
-      return { behavior: 'allow' as const };
+      return allow();
     }
 
     if (toolName.startsWith('mcp__') || toolName === 'Bash') {
-      return { behavior: 'allow' as const };
+      return allow();
     }
 
     const mode = getToolAccessMode(toolName);
     if (!mode) {
-      return { behavior: 'allow' as const };
+      return allow();
     }
 
     const path = extractPathFromInput(toolName, input);
@@ -296,7 +298,7 @@ export function buildCanUseTool(userId: string): CanUseTool {
           message: `Permission denied: no ${mode} access to working directory.`,
         };
       }
-      return { behavior: 'allow' as const };
+      return allow();
     }
 
     if (!isPathAllowed(path, permissions, mode, cwd)) {
@@ -306,7 +308,7 @@ export function buildCanUseTool(userId: string): CanUseTool {
       };
     }
 
-    return { behavior: 'allow' as const };
+    return allow();
   };
 }
 

@@ -250,6 +250,11 @@ export async function sendToAgent(
     maxBudgetUsd: config.anthropic.maxBudgetUsd,
     thinking: { type: 'adaptive' as const },
     cwd: getUserWorkspacePath(userId),
+    // 不加载任何外部 settings 文件（SDK 隔离模式）。
+    // 防止 ~/.claude/settings.local.json 中的 WebFetch(domain:...) 规则
+    // 被 SDK 转化为沙箱网络限制，导致非白名单域名的网络请求被拦截。
+    // Better-Claw 通过 canUseTool + sandbox 自行管理权限，无需 SDK 的 settings。
+    settingSources: [],
   };
 
   // 捕获 SDK 子进程的 stderr，用于错误诊断。
