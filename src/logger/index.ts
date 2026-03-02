@@ -1,13 +1,13 @@
 import { mkdirSync } from 'fs';
-import { Writable } from 'stream';
 import pino from 'pino';
+import type ThreadStream from 'thread-stream';
 import pinoPretty from 'pino-pretty';
 import type { AppConfig } from '../config/schema.js';
 
 let logger: pino.Logger | null = null;
 
 /** 当前 pino-roll file transport（worker 线程），用于关闭时清理。 */
-let activeFileTransport: Writable | null = null;
+let activeFileTransport: ThreadStream | null = null;
 
 /**
  * 创建应用日志实例。
