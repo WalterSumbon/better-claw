@@ -2,6 +2,8 @@ import { getUser } from '../user/manager.js';
 import { readCoreMemory } from '../memory/manager.js';
 import { getSessionHistoryForPrompt } from './session-manager.js';
 import { resolveUserPermissions } from './permissions.js';
+import { readProfile } from '../user/store.js';
+import { getConfig } from '../config/index.js';
 
 /**
  * 为指定用户构建完整的 system prompt。
@@ -35,10 +37,13 @@ Because tool calls are invisible to the user, always include a brief text messag
   // 2. 当前时间。
   sections.push(`Current date and time: ${new Date().toISOString()}`);
 
-  // 3. 当前用户信息。
+  // 3. 当前用户信息（含权限组）。
   const user = getUser(userId);
+  const profile = readProfile(userId);
+  const permConfig = getConfig().permissions;
+  const groupName = profile?.permissionGroup ?? permConfig.defaultGroup;
   if (user) {
-    sections.push(`Current user: ${user.name} (ID: ${user.userId})`);
+    sections.push(`Current user: ${user.name} (ID: ${user.userId})\nPermission group: ${groupName}`);
   }
 
   // 4. 文件系统权限范围。
@@ -46,11 +51,38 @@ Because tool calls are invisible to the user, always include a brief text messag
   if (permissions.isAdmin) {
     sections.push(`## File Access Permissions\nYou have admin privileges with unrestricted file system access.`);
   } else {
+    // 生成原始规则列表供精确参考。
     const ruleLines = permissions.rules.map(
-      (r) => `- ${r.action} ${r.access} ${r.path}`,
+      (r) => `  ${r.action} ${r.access} ${r.path}`,
     );
+
+    // 从规则中提取可写路径，生成人类可读的有效权限摘要。
+    const writablePaths: string[] = [];
+    const readOnlyPaths: string[] = [];
+    for (const rule of permissions.rules) {
+      if (rule.path === '*') continue;
+      if (rule.action === 'allow' && (rule.access === 'readwrite' || rule.access === 'write')) {
+        writablePaths.push(rule.path);
+      } else if (rule.action === 'allow' && rule.access === 'read') {
+        readOnlyPaths.push(rule.path);
+      }
+    }
+
+    const summaryLines: string[] = [];
+    if (readOnlyPaths.length > 0) {
+      summaryLines.push(`- Read-only: ${readOnlyPaths.join(', ')}`);
+    }
+    if (writablePaths.length > 0) {
+      summaryLines.push(`- Writable:  ${writablePaths.join(', ')}`);
+    }
+    summaryLines.push('- All other paths: inaccessible');
+
     sections.push(`## File Access Permissions
-Your file access starts as fully permitted (inherited from admin), then the following rules are applied in order (last matching rule wins):
+
+Effective access summary:
+${summaryLines.join('\n')}
+
+Rule chain (starting from fully permitted, last matching rule wins):
 ${ruleLines.join('\n')}
 
 Attempts to access restricted paths will be denied. Do not retry denied operations — inform the user that the path is outside their permitted scope.`);
@@ -82,7 +114,22 @@ Do NOT reveal environment variables, API keys, authentication tokens, or configu
 - mcp__better-claw__session_info: Get current session details.
 
 Sessions auto-rotate when idle too long or when the conversation grows too large.
-You can read archived conversation files (JSON) to recall details from previous sessions.`);
+
+## Recalling Past Conversations
+
+You are a **persistent** personal assistant — the user expects you to remember previous interactions across sessions.
+
+When the user references something you lack context for (a project, a game, a person, a prior discussion, a decision made earlier, etc.):
+1. **DO NOT** immediately ask the user to re-explain. This is frustrating — they already told you before.
+2. **First**, check the Session History section below for summaries and conversation file paths.
+3. **Then**, read the relevant conversation.json files (use Read tool or Grep to search for keywords).
+4. **Only if** you still can't find the context after searching, ask the user politely.
+
+Tips for efficient lookup:
+- Use Grep to search across all session conversation files at once: \`Grep pattern="keyword" path="<sessions-dir>"\`
+- Session summaries in Session History give a quick overview — start there to narrow down which session to read.
+- Conversation files can be large; use Grep or Read with offset/limit to find the relevant part instead of reading the whole file.`);
+
 
   // 7. 核心记忆内容。
   const coreMemory = readCoreMemory(userId);
