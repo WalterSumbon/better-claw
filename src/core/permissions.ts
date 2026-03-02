@@ -38,8 +38,8 @@ export function resolvePathVariable(pathStr: string, userId: string): string | n
 
   let result = pathStr;
   result = result.replace(/\$\{home\}/g, homedir());
-  result = result.replace(/\$\{userWorkspace\}/g, getUserWorkspacePath(userId));
-  result = result.replace(/\$\{userDir\}/g, getUserDir(userId));
+  result = result.replace(/\$\{userWorkspace\}/g, resolve(process.cwd(), getUserWorkspacePath(userId)));
+  result = result.replace(/\$\{userDir\}/g, resolve(process.cwd(), getUserDir(userId)));
   result = result.replace(/\$\{dataDir\}/g, dataDir);
   return result;
 }
@@ -137,7 +137,7 @@ export function resolveUserPermissions(userId: string): ResolvedPermissions {
       if (!accessLevel) {
         continue;
       }
-      const wgWorkspace = getWorkGroupWorkspacePath(wgName);
+      const wgWorkspace = resolve(process.cwd(), getWorkGroupWorkspacePath(wgName));
       if (accessLevel === 'rw') {
         rules.push({ action: 'allow', access: 'readwrite', path: wgWorkspace });
       } else {
