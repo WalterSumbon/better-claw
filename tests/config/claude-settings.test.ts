@@ -9,7 +9,7 @@ import {
   getClaudeSettings,
   reloadClaudeSettings,
 } from '../../src/config/claude-settings.js';
-import { createLogger } from '../../src/logger/index.js';
+import { createLogger, destroyLogger } from '../../src/logger/index.js';
 
 // Mock homedir 指向临时目录，隔离真实 ~/.claude/settings.json。
 let fakeHome: string;
@@ -52,7 +52,8 @@ describe('claude-settings', () => {
     resetClaudeSettings();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await destroyLogger();
     process.chdir(originalCwd);
     rmSync(tmpDir, { recursive: true, force: true });
     resetClaudeSettings();

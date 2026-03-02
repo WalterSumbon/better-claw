@@ -32,9 +32,9 @@ describe('Cron Scheduler', () => {
     initScheduler(() => {});
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     stopAllJobs();
-    cleanup();
+    await cleanup();
   });
 
   it('should create a cron task with valid expression', () => {

@@ -23,8 +23,8 @@ describe('User Manager', () => {
     cleanup = env.cleanup;
   });
 
-  afterEach(() => {
-    cleanup();
+  afterEach(async () => {
+    await cleanup();
   });
 
   it('should create a user with unique ID and token', () => {

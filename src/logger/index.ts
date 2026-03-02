@@ -1,9 +1,13 @@
 import { mkdirSync } from 'fs';
+import { Writable } from 'stream';
 import pino from 'pino';
 import pinoPretty from 'pino-pretty';
 import type { AppConfig } from '../config/schema.js';
 
 let logger: pino.Logger | null = null;
+
+/** 当前 pino-roll file transport（worker 线程），用于关闭时清理。 */
+let activeFileTransport: Writable | null = null;
 
 /**
  * 创建应用日志实例。
@@ -15,6 +19,12 @@ let logger: pino.Logger | null = null;
  * @returns 配置好的 pino logger。
  */
 export function createLogger(config: AppConfig['logging']): pino.Logger {
+  // 如果存在旧的 file transport，先关闭避免 worker 线程泄漏。
+  if (activeFileTransport) {
+    activeFileTransport.end();
+    activeFileTransport = null;
+  }
+
   mkdirSync(config.directory, { recursive: true });
 
   // 同步 pretty 输出到 stdout，避免 worker 线程启动延迟。
@@ -30,6 +40,7 @@ export function createLogger(config: AppConfig['logging']): pino.Logger {
       limit: { count: config.maxFiles },
     },
   });
+  activeFileTransport = fileTransport;
 
   const multistream = pino.multistream([
     { level: config.level as pino.Level, stream: prettyStream },
@@ -52,4 +63,24 @@ export function getLogger(): pino.Logger {
     throw new Error('Logger not initialized. Call createLogger() first.');
   }
   return logger;
+}
+
+/**
+ * 关闭 logger 及其 file transport worker 线程。
+ *
+ * 测试清理时应在删除临时目录之前 await 此函数，
+ * 等待 worker 线程完全关闭后再删目录，避免 ENOENT / RangeError。
+ */
+export async function destroyLogger(): Promise<void> {
+  if (activeFileTransport) {
+    const transport = activeFileTransport;
+    activeFileTransport = null;
+    await new Promise<void>((resolve) => {
+      transport.on('close', () => resolve());
+      // 安全超时：worker 线程极端情况下可能不触发 close。
+      setTimeout(resolve, 200);
+      transport.end();
+    });
+  }
+  logger = null;
 }

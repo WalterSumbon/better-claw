@@ -3,7 +3,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { resetConfig, setConfig } from '../../src/config/index.js';
 import { AppConfigSchema } from '../../src/config/schema.js';
-import { createLogger } from '../../src/logger/index.js';
+import { createLogger, destroyLogger } from '../../src/logger/index.js';
 import { loadBindingCache } from '../../src/user/manager.js';
 
 /**
@@ -11,7 +11,7 @@ import { loadBindingCache } from '../../src/user/manager.js';
  *
  * @returns 包含临时目录路径和清理函数的对象。
  */
-export function createTestEnv(): { dataDir: string; cleanup: () => void } {
+export function createTestEnv(): { dataDir: string; cleanup: () => Promise<void> } {
   const dataDir = mkdtempSync(join(tmpdir(), 'better-claw-test-'));
 
   // 创建必要的子目录。
@@ -35,7 +35,8 @@ export function createTestEnv(): { dataDir: string; cleanup: () => void } {
 
   return {
     dataDir,
-    cleanup: () => {
+    cleanup: async () => {
+      await destroyLogger();
       rmSync(dataDir, { recursive: true, force: true });
       resetConfig();
     },

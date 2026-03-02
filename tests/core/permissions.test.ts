@@ -32,8 +32,8 @@ describe('Permissions', () => {
     cleanup = env.cleanup;
   });
 
-  afterEach(() => {
-    cleanup();
+  afterEach(async () => {
+    await cleanup();
   });
 
   /**
