@@ -16,11 +16,15 @@ export const loadSkillsetTool = tool(
   'load_skillset',
   `Load a skill set or skill by path. Use this tool to explore and navigate the skill tree.
 
-- If the target is a **skillset** (intermediate node): returns the SKILLSET.md content plus a list of child nodes (with their names, types, and descriptions).
-- If the target is a **skill** (leaf node): returns the full SKILL.md content.
+There are two types of nodes in the skill tree:
+
+- **skill** (leaf node): A concrete, self-contained piece of expertise. Loading a skill returns the full SKILL.md content, which you can directly use.
+- **skillset** (intermediate/category node): A grouping of related skills and nested skillsets. Loading a skillset returns the SKILLSET.md overview plus a listing of its children (with names, types, and descriptions). You then load a specific child to drill deeper.
+
+Skillsets MUST be loaded via this tool to discover and navigate their children. They cannot be used directly — always drill down to a leaf skill.
 
 The path is relative (e.g., "deep-learning", "deep-learning/pytorch").
-You can discover available top-level skill sets from the system prompt, then drill down using this tool.
+You can discover available top-level entries from the system prompt, then drill down using this tool.
 
 Call with path="" or path="." to list all top-level entries.`,
   {
@@ -47,7 +51,13 @@ Call with path="" or path="." to list all top-level entries.`,
         };
       }
 
-      const lines: string[] = ['**Available Skill Sets:**', ''];
+      const lines: string[] = [
+        '**Available Skill Sets:**',
+        '',
+        '- **(skill)** — leaf node, directly loadable expertise.',
+        '- **(skillset)** — category node, load to see children and navigate deeper.',
+        '',
+      ];
       for (const path of index.topLevel) {
         const node = index.nodes.get(path);
         if (!node) continue;

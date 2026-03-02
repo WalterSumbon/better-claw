@@ -322,7 +322,7 @@ description: A skill for doing this: and that
       // Should contain the SKILLSET.md content
       expect(response).toContain('Data Science Skills');
       // Should contain children
-      expect(response).toContain('**Children:**');
+      expect(response).toContain('**Children**');
       expect(response).toContain('python-ml');
       expect(response).toContain('r-stats');
       expect(response).toContain('(skill)');

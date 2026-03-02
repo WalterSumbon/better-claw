@@ -297,6 +297,7 @@ export function readNodeContent(node: SkillNode): string {
  * 为 system prompt 生成顶层 skillset 清单文本。
  *
  * 只包含 topLevel 节点的 name + description + type。
+ * 明确区分 skill（叶子，可直接加载使用）和 skillset（中间节点，需展开浏览子节点）。
  */
 export function formatTopLevelListing(index: SkillIndex): string {
   if (index.topLevel.length === 0) return '';
@@ -304,12 +305,14 @@ export function formatTopLevelListing(index: SkillIndex): string {
   const lines: string[] = ['## Available Skill Sets', ''];
   lines.push('Use the `load_skillset` tool to explore and load skill sets on demand.');
   lines.push('');
+  lines.push('- **(skill)** — a leaf node containing directly loadable expertise.');
+  lines.push('- **(skillset)** — a category node; load it to see its children and navigate deeper.');
+  lines.push('');
 
   for (const path of index.topLevel) {
     const node = index.nodes.get(path);
     if (!node) continue;
-    const typeLabel = node.type === 'skillset' ? 'skillset' : 'skill';
-    lines.push(`- **${node.frontmatter.name}** (${typeLabel}): ${node.frontmatter.description || 'No description'}`);
+    lines.push(`- **${node.frontmatter.name}** (${node.type}): ${node.frontmatter.description || 'No description'}`);
   }
 
   return lines.join('\n');
@@ -328,7 +331,7 @@ export function formatSkillsetResponse(node: SkillNode, index: SkillIndex): stri
     lines.push('');
     lines.push('---');
     lines.push('');
-    lines.push('**Children:**');
+    lines.push('**Children** (skill = loadable leaf, skillset = category with sub-nodes):');
     lines.push('');
     for (const childPath of node.children) {
       const child = index.nodes.get(childPath);
