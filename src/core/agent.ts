@@ -364,10 +364,19 @@ export async function sendToAgent(
 
         // 从 assistant 消息中提取 input_tokens 和内容块。
         if (msg.type === 'assistant') {
-          const assistantMsg = msg as { message?: { usage?: { input_tokens?: number }; content?: Array<{ type: string; text?: string; thinking?: string; name?: string; id?: string; input?: unknown }> } };
+          const assistantMsg = msg as { message?: { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }; content?: Array<{ type: string; text?: string; thinking?: string; name?: string; id?: string; input?: unknown }> } };
           const usage = assistantMsg.message?.usage;
-          if (usage?.input_tokens) {
-            lastInputTokens = usage.input_tokens;
+          if (usage) {
+            // 完整 context 大小 = input_tokens + cache_creation + cache_read。
+            // 在 prompt caching 生效时，input_tokens 仅含未命中缓存的部分，
+            // 需要加上缓存相关 token 才能反映真实 context 占用。
+            const totalInputTokens =
+              (usage.input_tokens ?? 0) +
+              (usage.cache_creation_input_tokens ?? 0) +
+              (usage.cache_read_input_tokens ?? 0);
+            if (totalInputTokens > 0) {
+              lastInputTokens = totalInputTokens;
+            }
           }
 
           // 采集 assistant 内容块（thinking / text / tool_use）。
