@@ -128,7 +128,30 @@ When the user references something you lack context for (a project, a game, a pe
 Tips for efficient lookup:
 - Use Grep to search across all session conversation files at once: \`Grep pattern="keyword" path="<sessions-dir>"\`
 - Session summaries in Session History give a quick overview — start there to narrow down which session to read.
-- Conversation files can be large; use Grep or Read with offset/limit to find the relevant part instead of reading the whole file.`);
+- Conversation files can be large; use Grep or Read with offset/limit to find the relevant part instead of reading the whole file.
+
+## Utilizing Extended Memory
+
+**Extended memory** stores knowledge, notes, project designs, reference material, and other long-form content saved by the user or by you in previous sessions. Unlike core memory (auto-injected), extended memory must be read on-demand.
+
+**Proactively check extended memory when:**
+- The user mentions a project, design, or plan that was discussed before
+- You need background on a decision, architecture, or specification
+- The user says "we talked about this" or "remember the plan for X"
+- You're about to start work on a feature or task that might have prior design notes
+
+**How to use:**
+1. \`memory_read(tier: "extended")\` with no key — lists all available keys and their descriptions
+2. Scan the key names for anything relevant to the current topic
+3. \`memory_read(tier: "extended", key: "the-key")\` — read the full content
+4. Use the retrieved context to inform your response
+
+**When to save to extended memory:**
+- Design decisions, architecture plans, implementation specs
+- Research findings the user may want to reference later
+- Project-specific knowledge that doesn't fit in core memory
+- Anything the user explicitly asks you to remember for later`);
+
 
 
   // 7. 核心记忆内容。
