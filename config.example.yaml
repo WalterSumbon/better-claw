@@ -188,8 +188,18 @@ permissions:
     #   从 admin 继承（完全可读可写），然后逐条收紧：
     #   1. 禁止写入所有路径（全局只读，阻止全局安装、修改系统文件等）。
     #   2. 禁止整个数据目录的读写（隔离其他用户的数据、日志等）。
-    #   3. 允许读取自己的用户目录（profile、memory 等）。
-    #   4. 允许读写自己的 workspace（agent 工作区，包管理器局部安装在此进行）。
+    #   3. 允许读取自己的用户目录（profile、session、sessions 等均为只读）。
+    #   4. 允许读写自己的 memory 目录（core/extended memory 存储）。
+    #   5. 允许读写自己的 workspace（agent 工作区，包管理器局部安装在此进行）。
+    #
+    #   最终效果（userDir 下各路径）：
+    #     profile.json        → 只读（系统管理，用户不可篡改身份/权限组）
+    #     session.json         → 只读（会话元数据由系统维护）
+    #     sessions/            → 只读（历史会话归档，仅供回顾）
+    #     cumulative-summary.json → 只读（长期记忆摘要由系统生成）
+    #     crons.json           → 只读（定时任务通过 MCP 工具管理，不需要直接写权限）
+    #     memory/              → 可读可写（通过 MCP 工具或 agent 直接读写）
+    #     workspace/           → 可读可写（agent 主要工作区）
     user:
       # inherits: "admin"  # 可省略，默认就是 admin
       rules:
@@ -202,6 +212,9 @@ permissions:
         - action: allow
           access: read
           path: "${userDir}"
+        - action: allow
+          access: readwrite
+          path: "${userDir}/memory"
         - action: allow
           access: readwrite
           path: "${userWorkspace}"
