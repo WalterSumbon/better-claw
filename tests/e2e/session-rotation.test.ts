@@ -23,7 +23,8 @@ import { createTestEnv } from '../helpers/setup.js';
  * - Carryover 写入新 session
  * - 累积摘要浓缩
  *
- * 需要已认证的 Claude Code CLI，且不能在 Claude Code 会话内运行。
+ * 需要已认证的 Claude Code CLI。
+ * 在 Claude Code 会话内运行时，createTestEnv() 会自动清除 CLAUDECODE 环境变量。
  */
 describe('Session rotation integration', () => {
   let testUserId: string;

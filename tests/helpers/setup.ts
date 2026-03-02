@@ -21,6 +21,9 @@ export function createTestEnv(): { dataDir: string; cleanup: () => Promise<void>
   // 写入最小配置文件。
   writeFileSync(join(dataDir, 'config.yaml'), '# test config\n', 'utf-8');
 
+  // 清除 CLAUDECODE 环境变量，避免 SDK query() 拒绝在嵌套 session 中运行。
+  delete process.env.CLAUDECODE;
+
   // 重置并设置使用临时目录的配置。
   resetConfig();
   const config = AppConfigSchema.parse({

@@ -1,14 +1,20 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { query, type SDKMessage, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createTestEnv } from '../helpers/setup.js';
 
 /**
  * Claude Agent SDK 端到端测试。
  *
- * 注意：这些测试需要已认证的 Claude Code CLI，
- * 且不能在 Claude Code 会话内运行（需 unset CLAUDECODE）。
+ * 注意：这些测试需要已认证的 Claude Code CLI。
+ * 在 Claude Code 会话内运行时，会自动清除 CLAUDECODE 环境变量以避免嵌套检测。
  * 每个测试有较长的超时时间，因为 SDK 需要启动 CLI 进程。
  */
+
+// 清除 CLAUDECODE 环境变量，避免 SDK 拒绝在嵌套 session 中运行。
+beforeAll(() => {
+  delete process.env.CLAUDECODE;
+});
+
 describe('SDK basic e2e', () => {
   it('should complete a simple query and return a result message', async () => {
     const messages: SDKMessage[] = [];
