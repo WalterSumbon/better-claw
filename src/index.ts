@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, copyFileSync } from 'fs';
 import { resolve } from 'path';
 import { loadConfig, getConfig } from './config/index.js';
+import { initClaudeSettings } from './config/claude-settings.js';
 import { createLogger, getLogger } from './logger/index.js';
 import { loadBindingCache, resolveUser, bindPlatform, createUser, getUser, matchesWhitelist } from './user/manager.js';
 import { CLIAdapter } from './adapter/cli/adapter.js';
@@ -348,7 +349,10 @@ async function main(): Promise<void> {
   const log = getLogger();
   log.info('Better-Claw starting...');
 
-  // 3. 安装内置 skills 到 ~/.claude/skills/。
+  // 3. 加载 Claude Code settings（选择性继承 mcpServers / disallowedTools）。
+  initClaudeSettings();
+
+  // 3.5. 安装内置 skills 到 ~/.claude/skills/。
   installSkills();
 
   // 4. 加载用户绑定缓存。

@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'fs';
 import { isAbsolute, resolve } from 'path';
 import { parse as parseYaml, parseDocument } from 'yaml';
 import { AppConfigSchema, type AppConfig } from './schema.js';
+import { reloadClaudeSettings } from './claude-settings.js';
 
 /** 工作组配置类型。 */
 export interface WorkGroupConfig {
@@ -131,6 +132,9 @@ export function reloadConfig(): ReloadConfigResult {
       requireRestart.push(key);
     }
   }
+
+  // 同步刷新 Claude Code settings 缓存。
+  reloadClaudeSettings();
 
   return { reloaded, requireRestart };
 }
