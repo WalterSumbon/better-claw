@@ -116,6 +116,30 @@ SDK 必需的 Anthropic 变量始终从 `anthropic` 配置注入，不受 `envFi
 
 Playwright 和 Peekaboo 需要在 `~/.claude/settings.json` 中配置对应的 MCP server，参考各 skill 目录下的 `SKILL.md` 说明。
 
+## Claude Code Settings 继承
+
+Better-Claw 启动时会自动读取 Claude Code 的三层 settings 文件，选择性继承部分配置：
+
+**读取路径（优先级从低到高）：**
+
+- `~/.claude/settings.json`（user，全局配置）
+- `.claude/settings.json`（project，项目级配置）
+- `.claude/settings.local.json`（local，本地覆盖，通常 gitignore）
+
+**继承的字段：**
+
+- `mcpServers` — 外部 MCP 服务器配置（stdio / sse / http），自动合并到 agent 的 MCP servers 中
+- `disallowedTools` — 工具禁用列表，注入到 agent 的 SDK 选项中
+
+**不继承的字段：**
+
+- `permissions`（allow/deny 规则）— Claude Code 会将其转化为沙箱限制，与 Better-Claw 自有的权限系统冲突
+- `model`、`effortLevel` 等 — 由 Better-Claw 的 `config.yaml` 统一管理
+
+同名 MCP server 按层级覆盖（local > project > user），`disallowedTools` 跨层级去重合并。
+
+配置热重载时（`/admin reload-config`）会同步刷新 Claude Code settings 缓存。
+
 ## 对话命令
 
 在 Telegram 或 CLI 对话中可使用以下命令：
@@ -153,6 +177,7 @@ Playwright 和 Peekaboo 需要在 `~/.claude/settings.json` 中配置对应的 M
 | `messagePush` | 中间消息推送 |
 | `speechToText` | 语音转文字配置 |
 | `permissionMode` | Agent 权限模式 |
+| Claude Code settings | `~/.claude/settings.json` 等三层文件同步刷新 |
 
 不可热重载（需要 `/restart`）：
 
