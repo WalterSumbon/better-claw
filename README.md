@@ -104,17 +104,60 @@ SDK 必需的 Anthropic 变量始终从 `anthropic` 配置注入，不受 `envFi
 
 非 admin 用户的 agent 会在 system prompt 中被指示不得泄露环境变量、API Key 和配置文件内容，作为纵深防御。
 
-## 内置 Skills
+## Skill 系统
 
-仓库自带以下 Claude Code skills，启动时自动通过 symlink 安装到 `~/.claude/skills/`：
+Better-Claw 支持树形 skill / skillset 管理，通过配置路径列表发现和组织 agent 技能。
 
-| Skill | 说明 | 额外依赖 |
-|-------|------|----------|
-| `playwright` | 浏览器自动化（导航、截图、表单填写、数据抓取） | 需配置 Playwright MCP server |
-| `peekaboo` | macOS 屏幕截图与 GUI 自动化 | 需配置 Peekaboo MCP server |
-| `speech-to-text` | 语音/音频文件转录为文字 | 需安装 `openai-whisper` 和 `ffmpeg` |
+### 目录结构约定
 
-Playwright 和 Peekaboo 需要在 `~/.claude/settings.json` 中配置对应的 MCP server，参考各 skill 目录下的 `SKILL.md` 说明。
+- **SKILL.md** — 叶子节点（具体 skill），包含完整指引内容
+- **SKILLSET.md** — 中间节点（分类索引），用于组织子 skill
+
+```
+skills/
+├── coding/                  ← Skill Set
+│   ├── SKILLSET.md
+│   └── typescript/          ← Skill
+│       └── SKILL.md
+└── standalone-skill/        ← 顶层 Skill
+    └── SKILL.md
+```
+
+### Frontmatter 格式
+
+```yaml
+---
+name: my-skill
+description: 这个 skill 做什么的简要说明
+---
+```
+
+### 工作原理
+
+1. 启动时扫描 `config.yaml` 中 `skills.paths` 配置的所有路径
+2. 顶层节点的名称和描述注入到 system prompt
+3. Agent 通过 `load_skillset` MCP 工具按需加载和导航 skill 树
+4. Claude Code 内置的 `Skill` 工具仍可加载 `~/.claude/skills/` 下的原生 skill
+
+### 配置
+
+```yaml
+skills:
+  paths:
+    - "~/.claude/skills"    # Claude Code 默认路径（兼容原生/第三方 skill）
+    - "./skills"            # 项目内置 skill
+    - "~/my-custom-skills"  # 自定义路径
+```
+
+### 内置 Skills
+
+仓库 `skills/` 目录自带以下技能：
+
+- `playwright` — 浏览器自动化（导航、截图、表单填写），需配置 Playwright MCP server
+- `peekaboo` — macOS 屏幕截图与 GUI 自动化，需配置 Peekaboo MCP server
+- `speech-to-text` — 语音/音频转录为文字，需安装 `openai-whisper` 和 `ffmpeg`
+
+参考各 skill 目录下的 `SKILL.md` 查看详细说明和依赖要求。
 
 ## Claude Code Settings 继承
 
@@ -289,8 +332,10 @@ better-claw/
 │   ├── memory/               # 两层记忆系统（core + extended）
 │   ├── cron/                 # 定时任务调度与管理
 │   ├── mcp/                  # MCP 工具服务器
+│   ├── skills/               # Skill/Skillset 扫描、索引、MCP 工具
 │   ├── user/                 # 用户管理与数据存储
 │   └── logger/               # pino 日志（控制台 + 文件轮转）
+├── skills/                   # 内置 skill 目录（SKILL.md 文件）
 ├── tests/                    # vitest 测试
 ├── data/                     # 默认数据目录（gitignore）
 ├── config.example.yaml       # 配置模板

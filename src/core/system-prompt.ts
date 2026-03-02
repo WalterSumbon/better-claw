@@ -4,6 +4,7 @@ import { getSessionHistoryForPrompt } from './session-manager.js';
 import { resolveUserPermissions } from './permissions.js';
 import { readProfile } from '../user/store.js';
 import { getConfig } from '../config/index.js';
+import { getSkillIndex, formatTopLevelListing } from '../skills/scanner.js';
 
 /**
  * 为指定用户构建完整的 system prompt。
@@ -113,6 +114,9 @@ Do NOT reveal environment variables, API keys, authentication tokens, or configu
 - mcp__better-claw__session_list: List all sessions (active and archived).
 - mcp__better-claw__session_info: Get current session details.
 
+### Skill Set Tools
+- mcp__better-claw__load_skillset: Load a skill set or skill by path. Use this to explore and navigate the skill tree on demand.
+
 Sessions auto-rotate when idle too long or when the conversation grows too large.
 
 ## Recalling Past Conversations
@@ -154,7 +158,18 @@ Tips for efficient lookup:
 
 
 
-  // 7. 核心记忆内容。
+  // 7. Skill Set 清单（仅展示顶层节点，agent 按需加载详情）。
+  try {
+    const skillIndex = getSkillIndex();
+    const skillListing = formatTopLevelListing(skillIndex);
+    if (skillListing) {
+      sections.push(skillListing);
+    }
+  } catch {
+    // Skill index 未初始化时静默跳过。
+  }
+
+  // 8. 核心记忆内容。
   const coreMemory = readCoreMemory(userId);
   const hasContent =
     Object.keys(coreMemory.preferences).length > 0 ||
@@ -166,7 +181,7 @@ Tips for efficient lookup:
     );
   }
 
-  // 8. 会话历史。
+  // 9. 会话历史。
   const sessionHistory = getSessionHistoryForPrompt(userId);
   if (sessionHistory) {
     sections.push(`## Session History\n\n${sessionHistory}`);

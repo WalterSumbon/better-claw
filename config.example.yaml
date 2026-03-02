@@ -359,6 +359,63 @@ restart:
   #   - "@admin"              # 匹配 admin 权限组的所有用户
 
 # ----------------------------------------------------------------------------
+# Skill 系统配置
+# ----------------------------------------------------------------------------
+# 控制 agent 可用的 skill / skillset 搜索路径。
+# 启动时会扫描所有路径，构建 skill 索引，顶层节点注入 system prompt。
+# agent 通过 load_skillset MCP 工具按需加载和导航 skill 树。
+#
+# ── 目录结构约定 ──
+#
+# 每个 skill 路径下可以包含两种节点：
+#
+#   叶子节点（Skill）：包含 SKILL.md 的目录。
+#     代表一个具体的 skill，agent 可直接加载使用。
+#     SKILL.md 的 YAML frontmatter 必须包含 name 和 description。
+#
+#   中间节点（Skill Set）：包含 SKILLSET.md 的目录。
+#     代表一个 skill 分类，用于组织和索引子节点。
+#     SKILLSET.md 的 YAML frontmatter 必须包含 name 和 description。
+#     子目录中可以嵌套更多 Skill 或 Skill Set。
+#
+# 同一目录不应同时包含 SKILL.md 和 SKILLSET.md。
+#
+# ── 示例结构 ──
+#
+#   skills/
+#   ├── deep-learning/           ← Skill Set（含 SKILLSET.md）
+#   │   ├── SKILLSET.md
+#   │   ├── pytorch/             ← Skill（含 SKILL.md）
+#   │   │   └── SKILL.md
+#   │   └── transformers/        ← 嵌套 Skill Set
+#   │       ├── SKILLSET.md
+#   │       ├── fine-tuning/
+#   │       │   └── SKILL.md
+#   │       └── inference/
+#   │           └── SKILL.md
+#   └── finance/
+#       ├── SKILLSET.md
+#       ├── etf/
+#       │   └── SKILL.md
+#       └── options/
+#           └── SKILL.md
+#
+# ── Frontmatter 格式 ──
+#
+#   ---
+#   name: my-skill-name
+#   description: 这个 skill 做什么的简要说明
+#   ---
+#
+skills:
+  # Skill 搜索路径列表。支持 ~ 展开为用户主目录。
+  # 从前到后扫描，同名节点以先发现的为准（即前面的路径优先级更高）。
+  # 默认值：["~/.claude/skills", "./skills"]
+  paths:
+    - "~/.claude/skills"    # Claude Code 默认 skill 路径（兼容原生/第三方 skill）
+    - "./skills"            # Better-Claw 项目内置 skill
+
+# ----------------------------------------------------------------------------
 # 语音转文字配置（可选）
 # ----------------------------------------------------------------------------
 # 使用本地 OpenAI Whisper CLI 进行语音转录。

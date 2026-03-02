@@ -14,7 +14,7 @@ import { findPendingRestarts, deleteRestartMarker, writeRestartMarker } from './
 import type { InboundMessage } from './adapter/types.js';
 import type { MessageAdapter } from './adapter/interface.js';
 import type { CronTask } from './cron/types.js';
-import { installSkills } from './utils/install-skills.js';
+import { initSkillIndex } from './skills/scanner.js';
 import { handleAdminCommand } from './core/admin-commands.js';
 
 /**
@@ -352,8 +352,8 @@ async function main(): Promise<void> {
   // 3. 加载 Claude Code settings（选择性继承 mcpServers / disallowedTools）。
   initClaudeSettings();
 
-  // 3.5. 安装内置 skills 到 ~/.claude/skills/。
-  installSkills();
+  // 3.5. 构建 skill/skillset 索引。
+  initSkillIndex(config.skills.paths);
 
   // 4. 加载用户绑定缓存。
   loadBindingCache();

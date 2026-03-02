@@ -16,6 +16,7 @@ import {
   sessionListTool,
   sessionInfoTool,
 } from '../core/session-tools.js';
+import { loadSkillsetTool } from '../skills/tools.js';
 
 /**
  * 创建包含所有自定义工具的 MCP 服务器。
@@ -39,6 +40,7 @@ export function createAppMcpServer() {
       sessionNewTool,
       sessionListTool,
       sessionInfoTool,
+      loadSkillsetTool,
     ],
   });
 }

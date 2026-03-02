@@ -247,6 +247,7 @@ export async function sendToAgent(
       'mcp__better-claw__session_new',
       'mcp__better-claw__session_list',
       'mcp__better-claw__session_info',
+      'mcp__better-claw__load_skillset',
     ],
     includePartialMessages: true,
     maxBudgetUsd: config.anthropic.maxBudgetUsd,

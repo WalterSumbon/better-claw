@@ -149,6 +149,17 @@ const PermissionsConfigSchema = z.object({
   ]),
 });
 
+/** Skill 系统配置。 */
+const SkillsConfigSchema = z.object({
+  /** Skill / Skillset 搜索路径列表。
+   *  支持 ~ 展开为用户主目录。
+   *  从前到后扫描，同名节点以先发现的为准。 */
+  paths: z.array(z.string()).default(() => [
+    '~/.claude/skills',
+    './skills',
+  ]),
+});
+
 /** 语音转文字配置。 */
 const SpeechToTextConfigSchema = z.object({
   /** whisper 可执行文件路径。 */
@@ -222,6 +233,10 @@ export const AppConfigSchema = z.object({
   speechToText: SpeechToTextConfigSchema.optional(),
   /** 钉钉配置（可选，不配置则不启动钉钉适配器）。 */
   dingtalk: DingtalkConfigSchema.optional(),
+  /** Skill 系统配置。 */
+  skills: SkillsConfigSchema.default(() => ({
+    paths: ['~/.claude/skills', './skills'],
+  })),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
