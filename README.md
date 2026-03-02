@@ -131,6 +131,14 @@ Digest 策略（节省 token）：
 
 Carryover 在新 session 中始终保留，直到该 session 本身被轮转。
 
+### System Prompt 上下文构成
+
+每个新 session 开始时，初始 context 约占 ~21k tokens（200k 窗口的 ~11%）。下图展示了各部分的占比：
+
+![System Prompt 上下文构成](docs/system-prompt-composition.png)
+
+其中 86% 是 Claude Code SDK 的固定开销（内置系统提示 + 工具 Schema），Better-Claw 自身的系统提示仅占 14%，最大的一块是会话历史（Session History）。
+
 相关配置项（均在 `session` 下）：
 
 - `carryoverTurns` — 携带的轮次数，默认 5，设为 0 禁用
@@ -353,11 +361,11 @@ npm run dev:chat
 # 编译 TypeScript。
 npm run build
 
-# 运行测试（在 Claude Code 会话内需去掉 CLAUDECODE 环境变量）。
-env -u CLAUDECODE npx vitest run
+# 运行测试。
+npx vitest run
 
 # 监听模式测试。
-env -u CLAUDECODE npx vitest
+npx vitest
 ```
 
 ## 目录结构
