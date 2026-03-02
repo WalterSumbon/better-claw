@@ -38,10 +38,21 @@ const LoggingConfigSchema = z.object({
   replyLogMaxLength: z.number().default(200),
 });
 
+/** 消息交互模式。 */
+const InteractionModeSchema = z.enum(['queue', 'interrupt']).default('queue');
+
 /** 消息推送粒度配置。 */
 const MessagePushConfigSchema = z.object({
   /** 是否推送 assistant 中间文本消息。 */
   pushIntermediateMessages: z.boolean().default(true),
+  /**
+   * 消息交互模式。
+   *
+   * - "queue"：排队模式（默认），必须等前一条消息处理完再处理下一条。
+   * - "interrupt"：中断模式，新消息到达时立即中断当前 agent 处理，
+   *   将所有积压消息合并后一起发给 agent。
+   */
+  interactionMode: InteractionModeSchema,
 });
 
 /** 会话管理配置。 */
@@ -201,6 +212,7 @@ export const AppConfigSchema = z.object({
   /** 消息推送粒度配置。 */
   messagePush: MessagePushConfigSchema.default(() => ({
     pushIntermediateMessages: true,
+    interactionMode: 'queue' as const,
   })),
   /** 数据目录路径。 */
   dataDir: z.string().default('data'),

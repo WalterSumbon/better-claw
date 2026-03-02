@@ -141,6 +141,27 @@ function pauseAndScheduleResume(
 const TYPING_REFRESH_MS = 4000;
 
 /**
+ * 将多条消息合并为一条。
+ *
+ * 文本以换行符拼接，回调函数使用最后一条消息的（最新的交互上下文）。
+ * 适配器层已经将附件（图片、文件、语音等）嵌入到文本中，
+ * 因此合并文本即可保留所有附件引用。
+ *
+ * @param messages - 要合并的消息数组（至少 1 条）。
+ * @returns 合并后的单条消息。
+ */
+export function mergeMessages(messages: QueuedMessage[]): QueuedMessage {
+  if (messages.length === 1) return messages[0];
+
+  const mergedText = messages.map((m) => m.text).join('\n');
+  const last = messages[messages.length - 1];
+  return {
+    ...last,
+    text: mergedText,
+  };
+}
+
+/**
  * 处理单条消息：发送给 agent 并流式推送响应。
  *
  * @param message - 队列中的消息。
@@ -248,7 +269,23 @@ async function processNext(userId: string): Promise<void> {
   pausedUntil.delete(userId);
 
   processing.add(userId);
-  const message = queue.shift()!;
+
+  const config = getConfig();
+  const isInterruptMode = config.messagePush.interactionMode === 'interrupt';
+
+  // 中断模式下，将所有积压消息合并为一条。
+  let message: QueuedMessage;
+  if (isInterruptMode && queue.length > 1) {
+    const log = getLogger();
+    const all = queue.splice(0);
+    message = mergeMessages(all);
+    log.info(
+      { userId, mergedCount: all.length, mergedLength: message.text.length },
+      'Merged queued messages (interrupt mode)',
+    );
+  } else {
+    message = queue.shift()!;
+  }
 
   try {
     const rateLimited = await processMessage(message);
@@ -272,6 +309,7 @@ async function processNext(userId: string): Promise<void> {
  */
 export function enqueue(message: QueuedMessage): void {
   const log = getLogger();
+  const config = getConfig();
 
   if (!queues.has(message.userId)) {
     queues.set(message.userId, []);
@@ -286,7 +324,21 @@ export function enqueue(message: QueuedMessage): void {
     'Message enqueued',
   );
 
-  if (!processing.has(message.userId)) {
+  if (processing.has(message.userId)) {
+    // 用户正在处理中。中断模式下立即中断当前 agent。
+    if (config.messagePush.interactionMode === 'interrupt') {
+      log.info(
+        { userId: message.userId, queueLength: queues.get(message.userId)!.length },
+        'Interrupt mode: interrupting current agent to process new message',
+      );
+      // 异步中断。中断完成后 processMessage 的 finally 块会触发 processNext，
+      // 届时 processNext 会将所有积压消息合并后发给 agent。
+      interruptAgent(message.userId).catch((err) => {
+        log.error({ err, userId: message.userId }, 'Failed to interrupt agent in interrupt mode');
+      });
+    }
+    // queue 模式下不做任何事，等当前处理完后 processNext 自动拾起。
+  } else {
     processNext(message.userId).catch((err) => {
       log.error({ err, userId: message.userId }, 'Queue processing error');
       processing.delete(message.userId);
