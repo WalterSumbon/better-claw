@@ -275,7 +275,10 @@ export function buildCanUseTool(userId: string): CanUseTool {
   const cwd = getUserWorkspacePath(userId);
 
   return async (toolName, input) => {
-    const allow = () => ({ behavior: 'allow' as const, updatedInput: input });
+    const allow = () =>
+      input != null && typeof input === 'object' && !Array.isArray(input)
+        ? { behavior: 'allow' as const, updatedInput: input }
+        : { behavior: 'allow' as const };
 
     if (permissions.isAdmin) {
       return allow();
