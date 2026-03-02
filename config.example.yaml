@@ -341,6 +341,11 @@ session:
   # 默认值："claude-haiku-4-5-20251001"
   summaryModel: "claude-haiku-4-5-20251001"
 
+  # 摘要生成时每个分块的最大字符数。
+  # 对话总长度超过此值时自动分块（map-reduce），每块独立摘要后合并。
+  # 默认值：80000（约 20k tokens），适用于 haiku 的 200k context window。
+  summaryChunkMaxChars: 80000
+
   # system prompt 中展示的最近 session 数量（短期记忆）。
   # 更早的 session 会被浓缩合并到累积摘要中（长期记忆）。
   # 默认值：3

@@ -865,10 +865,43 @@ IMPORTANT: Use the Write tool to write ONLY the pure condensed summary to ${outp
 // ─── AI 摘要生成 ──────────────────────────────────────────────────────
 
 /**
+ * 将对话记录按条目边界分块，每块不超过 maxChars。
+ *
+ * @param conversation - 完整对话记录。
+ * @param maxChars - 每块最大字符数。
+ * @returns 分块后的文本数组。
+ */
+export function splitConversationIntoChunks(
+  conversation: ConversationEntry[],
+  maxChars: number,
+): string[] {
+  const chunks: string[] = [];
+  let currentChunk = '';
+
+  for (const entry of conversation) {
+    const line = `[${entry.role}]: ${entry.content}\n\n`;
+    // 若当前块加上这条会超限，且当前块非空，则先切块。
+    if (currentChunk.length + line.length > maxChars && currentChunk.length > 0) {
+      chunks.push(currentChunk.trimEnd());
+      currentChunk = '';
+    }
+    currentChunk += line;
+  }
+
+  if (currentChunk.trim().length > 0) {
+    chunks.push(currentChunk.trimEnd());
+  }
+
+  return chunks;
+}
+
+/**
  * 调用 LLM 生成对话摘要，直接写入指定文件。
  *
- * 通过 SDK query() 复用 Claude Code CLI 认证。
- * 模型将摘要直接写入 outputPath，程序仅校验文件是否生成且非空。
+ * 当对话总长度超过 summaryChunkMaxChars 时，自动分块：
+ * 1. 按条目边界将对话切分为多个块。
+ * 2. 每块独立生成中间摘要。
+ * 3. 将所有中间摘要合并，生成最终摘要。
  *
  * @param conversation - 对话记录。
  * @param outputPath - 摘要输出文件路径。
@@ -882,20 +915,50 @@ async function generateSummary(conversation: ConversationEntry[], outputPath: st
     return 'Empty session.';
   }
 
-  // 截取对话内容（避免过长）。
-  const maxChars = 8000;
-  let conversationText = '';
-  for (const entry of conversation) {
-    const line = `[${entry.role}]: ${entry.content}\n\n`;
-    if (conversationText.length + line.length > maxChars) {
-      conversationText += '... (conversation truncated)\n';
-      break;
-    }
-    conversationText += line;
+  const chunkMaxChars = config.session.summaryChunkMaxChars;
+  const model = config.session.summaryModel;
+  const chunks = splitConversationIntoChunks(conversation, chunkMaxChars);
+
+  log.debug(
+    { model, conversationLength: conversation.length, chunks: chunks.length },
+    'Generating session summary',
+  );
+
+  if (chunks.length === 1) {
+    // 单块：直接生成摘要。
+    return generateSingleSummary(chunks[0], outputPath, model);
   }
 
-  log.debug({ model: config.session.summaryModel, conversationLength: conversation.length }, 'Generating session summary');
+  // 多块：map-reduce。
+  log.info(
+    { chunks: chunks.length, model },
+    'Conversation exceeds chunk limit, using map-reduce summary',
+  );
 
+  const chunkSummaries: string[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const chunkPath = outputPath.replace(/\.txt$/, `.chunk${i}.txt`);
+    const chunkSummary = await generateChunkSummary(
+      chunks[i], i + 1, chunks.length, chunkPath, model,
+    );
+    chunkSummaries.push(chunkSummary);
+    // 清理临时文件。
+    if (existsSync(chunkPath)) unlinkSync(chunkPath);
+  }
+
+  // 合并中间摘要为最终摘要。
+  const mergedInput = chunkSummaries
+    .map((s, i) => `[Part ${i + 1}/${chunks.length}]: ${s}`)
+    .join('\n\n');
+  return generateMergedSummary(mergedInput, outputPath, model);
+}
+
+/** 单块摘要生成（对话完整放入一次 LLM 调用）。 */
+async function generateSingleSummary(
+  conversationText: string,
+  outputPath: string,
+  model: string,
+): Promise<string> {
   const prompt = `You are a session summary writer. Your ONLY task is to write a concise summary to a file.
 
 Instructions:
@@ -911,7 +974,58 @@ ${conversationText}
 
 IMPORTANT: Use the Write tool to write ONLY the pure summary to ${outputPath}. Nothing else.`;
 
-  return runQueryToFile(prompt, outputPath, config.session.summaryModel);
+  return runQueryToFile(prompt, outputPath, model);
+}
+
+/** 分块中间摘要生成（map 阶段）。 */
+async function generateChunkSummary(
+  chunkText: string,
+  partIndex: number,
+  totalParts: number,
+  outputPath: string,
+  model: string,
+): Promise<string> {
+  const prompt = `You are a session summary writer. Your ONLY task is to write a concise partial summary to a file.
+
+This is part ${partIndex} of ${totalParts} of a conversation. Summarize ONLY this portion.
+
+Instructions:
+1. Read the conversation portion below
+2. Write a 2-3 sentence summary of THIS PORTION to this EXACT file path: ${outputPath}
+3. The summary must be in the SAME LANGUAGE as the conversation (Chinese if the conversation is in Chinese)
+4. Write ONLY the pure summary text — no headers, no "Part X" labels, no markdown formatting
+5. Focus on: key topics discussed, decisions made, important outcomes in this portion
+
+Conversation (part ${partIndex}/${totalParts}):
+${chunkText}
+
+IMPORTANT: Use the Write tool to write ONLY the pure partial summary to ${outputPath}. Nothing else.`;
+
+  return runQueryToFile(prompt, outputPath, model);
+}
+
+/** 合并多个中间摘要为最终摘要（reduce 阶段）。 */
+async function generateMergedSummary(
+  partialSummaries: string,
+  outputPath: string,
+  model: string,
+): Promise<string> {
+  const prompt = `You are a session summary writer. Your ONLY task is to merge partial summaries into a final cohesive summary.
+
+Instructions:
+1. Read the partial summaries below (each covers a chronological portion of the same conversation)
+2. Write a single cohesive 2-4 sentence summary to this EXACT file path: ${outputPath}
+3. The summary must be in the SAME LANGUAGE as the partial summaries
+4. Write ONLY the pure summary text — no headers, no markdown formatting, no explanations
+5. Preserve all key topics, decisions, and outcomes from every part — do NOT omit any part
+6. Organize chronologically or by importance, keeping it concise
+
+Partial summaries:
+${partialSummaries}
+
+IMPORTANT: Use the Write tool to write ONLY the pure merged summary to ${outputPath}. Nothing else.`;
+
+  return runQueryToFile(prompt, outputPath, model);
 }
 
 // ─── 工具函数 ────────────────────────────────────────────────────────

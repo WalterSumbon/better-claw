@@ -69,6 +69,9 @@ const SessionConfigSchema = z.object({
   summaryEnabled: z.boolean().default(true),
   /** 摘要生成使用的模型（推荐使用较便宜的模型）。 */
   summaryModel: z.string().default('claude-haiku-4-5-20251001'),
+  /** 摘要生成时每个分块的最大字符数。对话总长度超过此值时自动分块，
+   *  每块独立生成中间摘要，最后合并为最终摘要。默认 80000（约 20k tokens）。 */
+  summaryChunkMaxChars: z.number().min(1000).default(80_000),
   /** system prompt 中展示的最近 session 数量（短期记忆），更早的 session 会被
    *  浓缩到累积摘要中（长期记忆）。 */
   maxRecentSessions: z.number().min(1).default(3),
@@ -245,6 +248,7 @@ export const AppConfigSchema = z.object({
     rotationForceRatio: 0.9,
     summaryEnabled: true,
     summaryModel: 'claude-haiku-4-5-20251001',
+    summaryChunkMaxChars: 80_000,
     maxRecentSessions: 3,
     carryoverTurns: 5,
     carryoverUserMaxChars: 500,
