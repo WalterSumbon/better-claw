@@ -57,10 +57,22 @@ const SessionConfigSchema = z.object({
   /** 轮转时是否生成 AI 摘要。 */
   summaryEnabled: z.boolean().default(true),
   /** 摘要生成使用的模型（推荐使用较便宜的模型）。 */
-  summaryModel: z.string().default('claude-haiku-4-20250414'),
+  summaryModel: z.string().default('claude-haiku-4-5-20251001'),
   /** system prompt 中展示的最近 session 数量（短期记忆），更早的 session 会被
    *  浓缩到累积摘要中（长期记忆）。 */
   maxRecentSessions: z.number().min(1).default(3),
+  /** 轮转时从旧 session 携带到新 session 的最近对话轮次数。
+   *  每轮 = 1 条用户消息 + 该轮最后 1 条 agent 回复（中间回复丢弃）。
+   *  这些对话会以规则化 digest 方式注入 system prompt，
+   *  确保模型知道轮转前刚刚发生了什么。0 表示不携带。 */
+  carryoverTurns: z.number().min(0).default(5),
+  /** Carryover 中用户消息的最大字符数。超过则截断并注明总长度。 */
+  carryoverUserMaxChars: z.number().min(0).default(500),
+  /** Carryover 中 agent 回复保留的开头字符数。 */
+  carryoverAssistantHeadChars: z.number().min(0).default(200),
+  /** Carryover 中 agent 回复保留的结尾字符数。
+   *  若回复总长度 ≤ headChars + tailChars，则保留全文不做 digest。 */
+  carryoverAssistantTailChars: z.number().min(0).default(200),
 });
 
 /** 重启权限配置。 */
@@ -220,8 +232,12 @@ export const AppConfigSchema = z.object({
     rotationContextRatio: 0.8,
     rotationForceRatio: 0.9,
     summaryEnabled: true,
-    summaryModel: 'claude-haiku-4-20250414',
+    summaryModel: 'claude-haiku-4-5-20251001',
     maxRecentSessions: 3,
+    carryoverTurns: 5,
+    carryoverUserMaxChars: 500,
+    carryoverAssistantHeadChars: 200,
+    carryoverAssistantTailChars: 200,
   })),
   /** 重启权限配置。 */
   restart: RestartConfigSchema.default(() => ({

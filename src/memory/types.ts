@@ -19,6 +19,8 @@ export interface ExtendedMemoryEntry {
   key: string;
   /** 记忆内容。 */
   content: string;
+  /** 一句话摘要，列表时用于快速判断是否需要读取。 */
+  summary?: string;
   /** 创建时间（ISO 8601）。 */
   createdAt: string;
   /** 最后更新时间（ISO 8601）。 */

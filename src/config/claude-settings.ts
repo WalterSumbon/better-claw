@@ -94,12 +94,18 @@ function extractFromFile(filePath: string): { mcpServers?: Record<string, Claude
  *
  * @returns 合并后的有效配置。
  */
-export function loadClaudeSettings(): ResolvedClaudeSettings {
-  const layers = [
+export function loadClaudeSettings(
+  excludeLayers?: string[],
+): ResolvedClaudeSettings {
+  const allLayers = [
     { name: 'user', path: getUserSettingsPath() },
     { name: 'project', path: getProjectSettingsPath() },
     { name: 'local', path: getLocalSettingsPath() },
   ];
+
+  const layers = excludeLayers
+    ? allLayers.filter((l) => !excludeLayers.includes(l.name))
+    : allLayers;
 
   const mergedMcpServers: Record<string, ClaudeSettingsMcpServer> = {};
   const mergedDisallowedTools = new Set<string>();
@@ -132,6 +138,7 @@ export function loadClaudeSettings(): ResolvedClaudeSettings {
 // ─────────────────────────────────────────────────────────────────────────────
 
 let cached: ResolvedClaudeSettings | null = null;
+let cachedProjectLocal: ResolvedClaudeSettings | null = null;
 
 /**
  * 初始化 Claude settings 缓存。在应用启动时调用。
@@ -140,6 +147,7 @@ let cached: ResolvedClaudeSettings | null = null;
  */
 export function initClaudeSettings(): ResolvedClaudeSettings {
   cached = loadClaudeSettings();
+  cachedProjectLocal = loadClaudeSettings(['user']);
 
   const log = getLogger();
   const serverCount = Object.keys(cached.mcpServers).length;
@@ -155,9 +163,7 @@ export function initClaudeSettings(): ResolvedClaudeSettings {
 }
 
 /**
- * 获取已缓存的 Claude settings。
- *
- * 如果尚未初始化，自动执行一次加载（惰性初始化）。
+ * 获取已缓存的 Claude settings（全部三层合并）。
  *
  * @returns 有效的 Claude settings。
  */
@@ -169,12 +175,26 @@ export function getClaudeSettings(): ResolvedClaudeSettings {
 }
 
 /**
+ * 获取仅 project + local 层的 Claude settings（排除 user 层）。
+ *
+ * 当 SDK settingSources 包含 'user' 时，使用此函数获取需要显式传入的配置，
+ * 避免与 SDK 自动加载的 user settings 重复。
+ */
+export function getProjectLocalSettings(): ResolvedClaudeSettings {
+  if (!cachedProjectLocal) {
+    cachedProjectLocal = loadClaudeSettings(['user']);
+  }
+  return cachedProjectLocal;
+}
+
+/**
  * 重新加载 Claude settings 缓存。用于热重载场景。
  *
  * @returns 重新加载后的有效配置。
  */
 export function reloadClaudeSettings(): ResolvedClaudeSettings {
   cached = loadClaudeSettings();
+  cachedProjectLocal = loadClaudeSettings(['user']);
   return cached;
 }
 
@@ -183,4 +203,5 @@ export function reloadClaudeSettings(): ResolvedClaudeSettings {
  */
 export function resetClaudeSettings(): void {
   cached = null;
+  cachedProjectLocal = null;
 }

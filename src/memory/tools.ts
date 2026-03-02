@@ -4,7 +4,7 @@ import { agentContext } from '../core/agent-context.js';
 import {
   readCoreMemory,
   writeCoreMemory,
-  listExtendedMemoryKeys,
+  listExtendedMemoryEntries,
   readExtendedMemory,
   writeExtendedMemory,
   deleteExtendedMemory,
@@ -59,19 +59,22 @@ Choose the appropriate tier based on what information you need.`,
 
     // extended tier
     if (!args.key) {
-      const keys = listExtendedMemoryKeys(userId);
-      if (keys.length === 0) {
+      const entries = listExtendedMemoryEntries(userId);
+      if (entries.length === 0) {
         return {
           content: [
             { type: 'text' as const, text: 'No extended memory entries found.' },
           ],
         };
       }
+      const listing = entries
+        .map((e) => e.summary ? `- ${e.key}: ${e.summary}` : `- ${e.key}`)
+        .join('\n');
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Available extended memory keys:\n${keys.join('\n')}`,
+            text: `Available extended memory entries:\n${listing}`,
           },
         ],
       };
@@ -120,6 +123,14 @@ Guidelines for choosing the tier:
       ),
     key: z.string().describe('Memory key / identifier for this entry.'),
     content: z.string().describe('The content to store.'),
+    summary: z
+      .string()
+      .optional()
+      .describe(
+        'A brief one-line summary of this entry (for extended tier only). ' +
+        'Shown when listing entries so the model can quickly decide which to read. ' +
+        'Always provide a concise summary when writing extended memory.',
+      ),
   },
   async (args) => {
     const userId = getCurrentUserId();
@@ -143,7 +154,7 @@ Guidelines for choosing the tier:
     }
 
     // extended tier
-    writeExtendedMemory(userId, args.key, args.content);
+    writeExtendedMemory(userId, args.key, args.content, args.summary);
     return {
       content: [
         {

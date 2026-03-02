@@ -62,6 +62,7 @@ npx tsx src/index.ts --data-dir /path/to/my-agent
 | `telegram.botToken` | 不配置则不启动 Telegram 适配器 |
 | `logging.directory` | 相对路径基于 dataDir 解析，默认 `logs` |
 | `session.rotationTimeoutHours` | 超过此小时数自动开新会话 |
+| `session.carryoverTurns` | 轮转时携带旧 session 最后 N 轮对话到新 session（默认 5） |
 
 ## 权限与安全
 
@@ -104,6 +105,39 @@ SDK 必需的 Anthropic 变量始终从 `anthropic` 配置注入，不受 `envFi
 
 非 admin 用户的 agent 会在 system prompt 中被指示不得泄露环境变量、API Key 和配置文件内容，作为纵深防御。
 
+## 记忆系统
+
+Better-Claw 提供两层记忆系统：
+
+- **Core Memory** — 用户偏好、身份等高频信息，自动注入每次对话的 system prompt
+- **Extended Memory** — 知识、笔记、参考资料等长内容，agent 按需读取
+
+每条 Extended Memory 支持 `summary` 字段（一句话摘要）。列出所有条目时会显示 key + summary，帮助 agent 快速判断需要读取哪个条目，无需逐个打开。
+
+## 会话轮转与上下文衔接
+
+会话在以下情况自动轮转：
+- 超时（用户最后消息距今超过 `rotationTimeoutHours`）
+- Context 过大（token 占比达到 `rotationContextRatio` / `rotationForceRatio`）
+- 手动（用户发送 `/new` 命令）
+
+**Carryover 机制**：不论何种原因触发轮转，系统都会从旧 session 最后 N 轮对话中提取 carryover，以规则化 digest 方式注入新 session 的 system prompt，确保模型不会遗忘轮转前的对话内容。
+
+一轮 = 1 条用户消息 + 该轮最后 1 条 agent 回复。agent 在循环中可能产生多条中间 assistant 消息，carryover 只保留每轮的最终回复。
+
+Digest 策略（节省 token）：
+- 用户消息：超过 `carryoverUserMaxChars` 字符则截断，并注明总长度
+- Agent 回复：超过 `carryoverAssistantHeadChars` + `carryoverAssistantTailChars` 则只保留开头和结尾原文，中间省略并注明总长度；未超过则保留全文
+
+Carryover 在新 session 中始终保留，直到该 session 本身被轮转。
+
+相关配置项（均在 `session` 下）：
+
+- `carryoverTurns` — 携带的轮次数，默认 5，设为 0 禁用
+- `carryoverUserMaxChars` — 用户消息截断阈值，默认 500
+- `carryoverAssistantHeadChars` — agent 回复保留开头字符数，默认 200
+- `carryoverAssistantTailChars` — agent 回复保留结尾字符数，默认 200
+
 ## Skill 系统
 
 Better-Claw 支持树形 skill / skillset 管理，通过配置路径列表发现和组织 agent 技能。
@@ -137,7 +171,7 @@ description: 这个 skill 做什么的简要说明
 1. 启动时扫描 `config.yaml` 中 `skills.paths` 配置的所有路径
 2. 顶层节点的名称和描述注入到 system prompt
 3. Agent 通过 `load_skillset` MCP 工具按需加载和导航 skill 树
-4. Claude Code 内置的 `Skill` 工具仍可加载 `~/.claude/skills/` 下的原生 skill
+4. SDK 通过 `settingSources: ['user']` 原生发现 `~/.claude/skills/` 下的 skill，自动出现在 `Skill` 工具和 system prompt 的 `<system-reminder>` 中
 
 ### 配置
 
@@ -161,22 +195,29 @@ skills:
 
 ## Claude Code Settings 继承
 
-Better-Claw 启动时会自动读取 Claude Code 的三层 settings 文件，选择性继承部分配置：
+Better-Claw 与 Claude Code SDK 的 settings 系统协作，通过两个层面加载配置：
 
-**读取路径（优先级从低到高）：**
+**SDK 原生加载（`settingSources: ['user']`）：**
 
-- `~/.claude/settings.json`（user，全局配置）
+SDK 自动加载 `~/.claude/settings.json`（user 层），从中发现：
+- `~/.claude/skills/` 下的原生 skill（出现在 SDK 的 `Skill` 工具和 system prompt 中）
+- user 层的 `mcpServers`（自动启动）
+
+不加载 `settings.local.json`（local 层），以避免其中的 `permissions.allow` 规则（如 WebFetch domain 限制）被 SDK 转化为沙箱网络限制。
+
+**Better-Claw 显式加载（project + local 层）：**
+
+Better-Claw 额外读取 project 和 local 层的 settings 文件，提取以下字段合并到 agent 配置中：
+- `mcpServers` — 外部 MCP 服务器配置（stdio / sse / http）
+- `disallowedTools` — 工具禁用列表
+
+读取路径（仅 project + local）：
 - `.claude/settings.json`（project，项目级配置）
 - `.claude/settings.local.json`（local，本地覆盖，通常 gitignore）
 
-**继承的字段：**
-
-- `mcpServers` — 外部 MCP 服务器配置（stdio / sse / http），自动合并到 agent 的 MCP servers 中
-- `disallowedTools` — 工具禁用列表，注入到 agent 的 SDK 选项中
-
 **不继承的字段：**
 
-- `permissions`（allow/deny 规则）— Claude Code 会将其转化为沙箱限制，与 Better-Claw 自有的权限系统冲突
+- `permissions`（allow/deny 规则）— 与 Better-Claw 自有的权限系统冲突
 - `model`、`effortLevel` 等 — 由 Better-Claw 的 `config.yaml` 统一管理
 
 同名 MCP server 按层级覆盖（local > project > user），`disallowedTools` 跨层级去重合并。

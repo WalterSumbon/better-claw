@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, unlinkSync } from 'fs';
+import { join, resolve } from 'path';
+import { query, type SDKResultMessage, type CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import { getConfig } from '../config/index.js';
 import { getLogger } from '../logger/index.js';
 import {
@@ -38,6 +41,102 @@ interface BackgroundRotation {
 
 /** 每用户后台轮转状态（内存中，进程重启后丢失）。 */
 const bgRotations = new Map<string, BackgroundRotation>();
+
+// ─── Carryover 提取（规则化 digest） ─────────────────────────────────
+
+/** Digest 参数（从 config 读取）。 */
+export interface DigestParams {
+  userMaxChars: number;
+  assistantHeadChars: number;
+  assistantTailChars: number;
+}
+
+/**
+ * 对用户消息内容进行 digest。
+ * 超过阈值则截断并注明总长度。
+ */
+export function digestUserContent(content: string, maxChars: number): string {
+  if (content.length <= maxChars) return content;
+  return content.slice(0, maxChars) + `... (${content.length} chars total)`;
+}
+
+/**
+ * 对 assistant 回复内容进行 digest。
+ * 保留开头 + 结尾原文，中间省略并注明总长度。
+ * 若总长度 ≤ headChars + tailChars，则保留全文。
+ */
+export function digestAssistantContent(
+  content: string,
+  headChars: number,
+  tailChars: number,
+): string {
+  if (content.length <= headChars + tailChars) return content;
+  return (
+    content.slice(0, headChars) +
+    `\n...(omitted, ${content.length} chars total)...\n` +
+    content.slice(-tailChars)
+  );
+}
+
+/**
+ * 从对话记录中提取最后 N 轮的 carryover，并对内容做 digest。
+ *
+ * 一轮 = 1 条 user 消息 + 该轮最后 1 条 assistant 回复（agent 循环中的中间回复丢弃）。
+ *
+ * @param conversation - 完整对话记录。
+ * @param maxTurns - 最多提取的轮次数。
+ * @param digest - Digest 参数。
+ * @returns CarryoverEntry 数组。
+ */
+export function extractCarryover(
+  conversation: ConversationEntry[],
+  maxTurns: number,
+  digest: DigestParams,
+): CarryoverEntry[] {
+  if (maxTurns <= 0 || conversation.length === 0) return [];
+
+  // 将对话分组为轮次：每轮以 user 消息开头，到下一条 user 消息前结束。
+  // 每轮中只保留最后一条 assistant 回复。
+  const turns: Array<{ user: ConversationEntry; assistant?: ConversationEntry }> = [];
+  let currentTurn: { user: ConversationEntry; assistant?: ConversationEntry } | null = null;
+
+  for (const entry of conversation) {
+    if (entry.role === 'user') {
+      if (currentTurn) turns.push(currentTurn);
+      currentTurn = { user: entry };
+    } else if (entry.role === 'assistant' && currentTurn) {
+      // 始终用最新的 assistant 消息覆盖，只保留最后一条。
+      currentTurn.assistant = entry;
+    }
+  }
+  if (currentTurn) turns.push(currentTurn);
+
+  // 取最后 N 轮。
+  const recentTurns = turns.slice(-maxTurns);
+
+  // 构建 carryover 条目并 digest。
+  const result: CarryoverEntry[] = [];
+  for (const turn of recentTurns) {
+    result.push({
+      timestamp: turn.user.timestamp,
+      role: 'user',
+      content: digestUserContent(turn.user.content, digest.userMaxChars),
+    });
+    if (turn.assistant) {
+      result.push({
+        timestamp: turn.assistant.timestamp,
+        role: 'assistant',
+        content: digestAssistantContent(
+          turn.assistant.content,
+          digest.assistantHeadChars,
+          digest.assistantTailChars,
+        ),
+      });
+    }
+  }
+
+  return result;
+}
 
 // ─── 轮转检查 ────────────────────────────────────────────────────────
 
@@ -124,7 +223,8 @@ export async function rotateSession(
     if (config.session.summaryEnabled) {
       try {
         const conversation = readConversation(userId, currentSession.localId);
-        summary = await generateSummary(conversation);
+        const summaryPath = join(sessionsDir(userId), currentSession.localId, 'summary.txt');
+        summary = await generateSummary(conversation, summaryPath);
       } catch (err) {
         log.error({ err, userId }, 'Failed to generate session summary');
         summary = `[Summary generation failed] Session had ${currentSession.messageCount} messages over ${currentSession.totalTurns} turns.`;
@@ -149,6 +249,23 @@ export async function rotateSession(
     );
   }
 
+  // 提取旧 session 最后 N 轮对话作为 carryover（规则化 digest）。
+  let carryover: CarryoverEntry[] = [];
+  if (currentSession) {
+    const carryoverTurns = config.session.carryoverTurns ?? 5;
+    const digest: DigestParams = {
+      userMaxChars: config.session.carryoverUserMaxChars ?? 500,
+      assistantHeadChars: config.session.carryoverAssistantHeadChars ?? 200,
+      assistantTailChars: config.session.carryoverAssistantTailChars ?? 200,
+    };
+    try {
+      const conversation = readConversation(userId, currentSession.localId);
+      carryover = extractCarryover(conversation, carryoverTurns, digest);
+    } catch (err) {
+      log.warn({ err, userId }, 'Failed to extract carryover from old session');
+    }
+  }
+
   // 将超出短期窗口的旧 session 浓缩到累积摘要。
   try {
     await consolidateOldSessions(userId);
@@ -160,8 +277,14 @@ export async function rotateSession(
   clearActiveSession(userId);
   const newSession = createActiveSession(userId);
 
+  // 写入 carryover 到新 session metadata。
+  if (carryover.length > 0) {
+    newSession.carryover = carryover;
+    writeActiveSession(userId, newSession);
+  }
+
   log.info(
-    { userId, newLocalId: newSession.localId },
+    { userId, newLocalId: newSession.localId, carryoverEntries: carryover.length },
     'New session created',
   );
 
@@ -201,7 +324,8 @@ function startBackgroundPrep(userId: string, session: SessionMetadata): void {
       let summary: string | undefined;
       if (config.session.summaryEnabled) {
         const conversation = readConversation(userId, session.localId);
-        summary = await generateSummary(conversation);
+        const summaryPath = join(sessionsDir(userId), session.localId, 'summary.txt');
+        summary = await generateSummary(conversation, summaryPath);
       }
       bg.summary = summary;
 
@@ -241,14 +365,16 @@ function performInstantSwitch(userId: string, bg: BackgroundRotation): SessionMe
     return currentSession || createActiveSession(userId);
   }
 
-  // 提取 carryover：触发点之后的中间对话（仅用户文本 + agent 最终回复）。
+  // 提取 carryover：旧 session 最后 N 轮对话（规则化 digest）。
+  const config = getConfig();
+  const carryoverTurns = config.session.carryoverTurns ?? 5;
+  const digest: DigestParams = {
+    userMaxChars: config.session.carryoverUserMaxChars ?? 500,
+    assistantHeadChars: config.session.carryoverAssistantHeadChars ?? 200,
+    assistantTailChars: config.session.carryoverAssistantTailChars ?? 200,
+  };
   const allConversations = readConversation(userId, currentSession.localId);
-  // 每个 messageCount 对应 conversation.json 中的 2 个条目（user + assistant）。
-  const carryoverStartIdx = bg.triggerMessageCount * 2;
-  const intermediateEntries = allConversations.slice(carryoverStartIdx);
-  const carryover: CarryoverEntry[] = intermediateEntries
-    .filter((e) => e.role === 'user' || e.role === 'assistant')
-    .map((e) => ({ timestamp: e.timestamp, role: e.role, content: e.content }));
+  const carryover = extractCarryover(allConversations, carryoverTurns, digest);
 
   // 归档旧 session（使用预生成的摘要）。
   const archivedMetadata: SessionMetadata = {
@@ -459,10 +585,8 @@ export function updateSessionAfterQuery(
     if (resultMeta.contextWindowTokens) {
       session.contextWindowTokens = resultMeta.contextWindowTokens;
     }
-    // 清除 carryover（仅在新 session 的首次查询后存在，避免后续查询重复注入）。
-    if (session.carryover) {
-      delete session.carryover;
-    }
+    // 保留 carryover 直到 session 轮转，确保模型在整个 session 生命周期内
+    // 都能看到上一个 session 的最近对话上下文。
     session.updatedAt = now;
     writeActiveSession(userId, session);
   }
@@ -510,7 +634,7 @@ export function getSessionHistoryForPrompt(userId: string): string {
     lines.push(`- Messages: ${current.messageCount}, Context: ${current.contextTokens.toLocaleString()} tokens${contextPct}`);
     lines.push('');
 
-    // 渲染 carryover（上一个 session 轮转时的中间对话，仅在首次查询中存在）。
+    // 渲染 carryover（上一个 session 轮转时携带的最近对话，保留直到本 session 轮转）。
     if (current.carryover && current.carryover.length > 0) {
       lines.push('### Carried Over from Previous Session');
       lines.push('The following recent conversations from the end of the previous session are provided for context continuity:');
@@ -619,8 +743,9 @@ async function consolidateOldSessions(userId: string): Promise<void> {
     inputParts.push(`New session summaries to incorporate:\n${newSummaries.join('\n')}`);
   }
 
-  // 调用 AI 浓缩。
-  const condensedText = await condenseCumulativeSummary(inputParts.join('\n\n'));
+  // 调用 AI 浓缩，LLM 直接写入临时文件。
+  const condensedOutputPath = join(sessionsDir(userId), '.condensed-summary.txt');
+  const condensedText = await condenseCumulativeSummary(inputParts.join('\n\n'), condensedOutputPath);
 
   writeCumulativeSummary(userId, {
     text: condensedText,
@@ -640,79 +765,116 @@ async function consolidateOldSessions(userId: string): Promise<void> {
 }
 
 /**
- * 调用 Claude API 将多个 session 摘要浓缩为一段累积摘要。
+ * 通过 SDK query() 执行 LLM 调用，让模型直接把结果写入指定文件。
  *
- * @param input - 包含已有累积摘要和新增摘要的文本。
- * @returns 浓缩后的累积摘要文本。
+ * 复用 Claude Code CLI 认证，无需单独配置 API Key。
+ * 程序侧仅校验文件是否成功生成且非空，无需解析 LLM 返回文本。
+ *
+ * @param prompt - 发送给 LLM 的 prompt（需包含写入文件的指令和路径）。
+ * @param outputPath - 期望 LLM 写入的文件路径。
+ * @param model - 使用的模型 ID。
+ * @returns 文件中的内容文本。
  */
-async function condenseCumulativeSummary(input: string): Promise<string> {
-  const config = getConfig();
-
-  const baseUrl = config.anthropic.baseUrl || 'https://api.anthropic.com';
-  const headers: Record<string, string> = {
-    'anthropic-version': '2023-06-01',
-    'content-type': 'application/json',
-  };
-
-  if (config.anthropic.authToken) {
-    headers['Authorization'] = `Bearer ${config.anthropic.authToken}`;
-  }
-  if (config.anthropic.apiKey) {
-    headers['x-api-key'] = config.anthropic.apiKey;
+export async function runQueryToFile(prompt: string, outputPath: string, model: string): Promise<string> {
+  // 清理可能残留的旧文件。
+  if (existsSync(outputPath)) {
+    unlinkSync(outputPath);
   }
 
-  const body = {
-    model: config.session.summaryModel,
-    max_tokens: 1024,
-    messages: [
-      {
-        role: 'user',
-        content: `You are maintaining a long-term memory summary for a personal AI assistant. Below is the existing cumulative summary and/or new session summaries that need to be incorporated.
+  // 将 outputPath 解析为绝对路径，确保与 LLM 传入的路径比较一致。
+  const absOutputPath = resolve(outputPath);
 
-Please produce a single, cohesive summary that:
-1. Preserves all important facts, decisions, preferences, and outcomes
-2. Removes redundant information
-3. Stays concise (aim for 3-8 sentences)
-4. Writes in the same language the user used (Chinese if the summaries are in Chinese)
-5. Organizes by topic/theme rather than chronologically when possible
-
-${input}`,
-      },
-    ],
+  // 权限防护：
+  // 1. tools: ['Write'] — 模型上下文中只存在 Write 工具，其他工具完全不可见。
+  // 2. canUseTool — 即使使用了 Write，也只允许写入 outputPath 这一个文件。
+  //    防止对话内容中的 prompt injection 诱导模型写入非预期路径。
+  const canUseTool: CanUseTool = async (_toolName, input) => {
+    const filePath = (input as Record<string, unknown>)?.file_path;
+    if (typeof filePath === 'string' && resolve(filePath) === absOutputPath) {
+      return { behavior: 'allow' as const, updatedInput: input as Record<string, unknown> };
+    }
+    return {
+      behavior: 'deny' as const,
+      message: `Write is only allowed to ${absOutputPath}. Denied: ${filePath}`,
+    };
   };
 
-  const response = await fetch(`${baseUrl}/v1/messages`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
+  const q = query({
+    prompt,
+    options: {
+      model,
+      maxTurns: 2,  // Write(1) + result(1)，模型只能看到 Write 工具，不会浪费 turn
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      tools: ['Write'],
+      canUseTool,
+    },
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Cumulative summary API call failed (${response.status}): ${errorText}`);
+  for await (const msg of q) {
+    if (msg.type === 'result') {
+      const result = msg as SDKResultMessage;
+      if (result.subtype !== 'success') {
+        throw new Error(`SDK query failed: ${JSON.stringify(result)}`);
+      }
+    }
   }
 
-  const data = (await response.json()) as {
-    content?: Array<{ type: string; text?: string }>;
-  };
-
-  const text = data.content?.find((b) => b.type === 'text')?.text;
-  if (!text) {
-    throw new Error('Cumulative summary API returned no text content');
+  // 校验文件是否生成。
+  if (!existsSync(outputPath)) {
+    throw new Error(`LLM did not write to expected file: ${outputPath}`);
   }
 
-  return text;
+  const content = readFileSync(outputPath, 'utf-8').trim();
+  if (content.length === 0) {
+    throw new Error(`LLM wrote an empty file: ${outputPath}`);
+  }
+
+  return content;
+}
+
+/**
+ * 调用 LLM 将多个 session 摘要浓缩为一段累积摘要，直接写入指定文件。
+ *
+ * @param input - 包含已有累积摘要和新增摘要的文本。
+ * @param outputPath - 摘要输出文件路径。
+ * @returns 浓缩后的累积摘要文本。
+ */
+async function condenseCumulativeSummary(input: string, outputPath: string): Promise<string> {
+  const config = getConfig();
+
+  const prompt = `You are maintaining a long-term memory summary for a personal AI assistant. Your ONLY task is to write a condensed summary to a file.
+
+Instructions:
+1. Read the input below (existing summary + new session summaries)
+2. Produce a single, cohesive summary that preserves all important facts, decisions, preferences, and outcomes
+3. Remove redundant information, stay concise (aim for 3-8 sentences)
+4. Organize by topic/theme rather than chronologically when possible
+5. Write in the same language the user used (Chinese if the summaries are in Chinese)
+6. Write ONLY the pure summary text to this EXACT file path: ${outputPath}
+7. Do NOT include any conversational preamble, headers, or explanations — just the summary itself
+
+Input:
+${input}
+
+IMPORTANT: Use the Write tool to write ONLY the pure condensed summary to ${outputPath}. Nothing else.`;
+
+  return runQueryToFile(prompt, outputPath, config.session.summaryModel);
 }
 
 // ─── AI 摘要生成 ──────────────────────────────────────────────────────
 
 /**
- * 调用 Claude API 生成对话摘要。
+ * 调用 LLM 生成对话摘要，直接写入指定文件。
+ *
+ * 通过 SDK query() 复用 Claude Code CLI 认证。
+ * 模型将摘要直接写入 outputPath，程序仅校验文件是否生成且非空。
  *
  * @param conversation - 对话记录。
+ * @param outputPath - 摘要输出文件路径。
  * @returns 摘要文本。
  */
-async function generateSummary(conversation: ConversationEntry[]): Promise<string> {
+async function generateSummary(conversation: ConversationEntry[], outputPath: string): Promise<string> {
   const log = getLogger();
   const config = getConfig();
 
@@ -732,54 +894,24 @@ async function generateSummary(conversation: ConversationEntry[]): Promise<strin
     conversationText += line;
   }
 
-  // 确定认证方式和 API 地址。
-  const baseUrl = config.anthropic.baseUrl || 'https://api.anthropic.com';
-  const headers: Record<string, string> = {
-    'anthropic-version': '2023-06-01',
-    'content-type': 'application/json',
-  };
-
-  if (config.anthropic.authToken) {
-    headers['Authorization'] = `Bearer ${config.anthropic.authToken}`;
-  }
-  if (config.anthropic.apiKey) {
-    headers['x-api-key'] = config.anthropic.apiKey;
-  }
-
-  const body = {
-    model: config.session.summaryModel,
-    max_tokens: 512,
-    messages: [
-      {
-        role: 'user',
-        content: `Please summarize the following conversation between a user and an AI assistant in 2-3 concise sentences. Focus on the key topics discussed, decisions made, and any important outcomes. Write the summary in the same language the user used.\n\n${conversationText}`,
-      },
-    ],
-  };
-
   log.debug({ model: config.session.summaryModel, conversationLength: conversation.length }, 'Generating session summary');
 
-  const response = await fetch(`${baseUrl}/v1/messages`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  const prompt = `You are a session summary writer. Your ONLY task is to write a concise summary to a file.
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Summary API call failed (${response.status}): ${errorText}`);
-  }
+Instructions:
+1. Read the conversation below
+2. Write a 2-3 sentence summary to this EXACT file path: ${outputPath}
+3. The summary must be in the SAME LANGUAGE as the conversation (Chinese if the conversation is in Chinese)
+4. Write ONLY the pure summary text — no headers, no markdown formatting, no explanations, no conversational preamble
+5. Do NOT say anything like "Here is the summary" or "I'd be happy to help" — just write the summary itself
+6. Focus on: key topics discussed, decisions made, important outcomes
 
-  const data = (await response.json()) as {
-    content?: Array<{ type: string; text?: string }>;
-  };
+Conversation:
+${conversationText}
 
-  const summaryText = data.content?.find((b) => b.type === 'text')?.text;
-  if (!summaryText) {
-    throw new Error('Summary API returned no text content');
-  }
+IMPORTANT: Use the Write tool to write ONLY the pure summary to ${outputPath}. Nothing else.`;
 
-  return summaryText;
+  return runQueryToFile(prompt, outputPath, config.session.summaryModel);
 }
 
 // ─── 工具函数 ────────────────────────────────────────────────────────

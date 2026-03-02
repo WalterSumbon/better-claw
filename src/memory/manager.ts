@@ -101,6 +101,30 @@ export function listExtendedMemoryKeys(userId: string): string[] {
 }
 
 /**
+ * 列出用户所有扩展记忆的 key 和 summary。
+ *
+ * @param userId - 用户 ID。
+ * @returns 包含 key 和 summary 的数组。
+ */
+export function listExtendedMemoryEntries(
+  userId: string,
+): Array<{ key: string; summary?: string }> {
+  const dir = extendedMemoryDir(userId);
+  if (!existsSync(dir)) {
+    return [];
+  }
+  return readdirSync(dir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => {
+      const entry = readJsonFile<ExtendedMemoryEntry>(join(dir, f));
+      return {
+        key: entry?.key ?? f.replace('.json', ''),
+        summary: entry?.summary,
+      };
+    });
+}
+
+/**
  * 读取指定扩展记忆条目。
  *
  * @param userId - 用户 ID。
@@ -125,6 +149,7 @@ export function writeExtendedMemory(
   userId: string,
   key: string,
   content: string,
+  summary?: string,
 ): void {
   const dir = extendedMemoryDir(userId);
   ensureDir(dir);
@@ -134,6 +159,7 @@ export function writeExtendedMemory(
   const entry: ExtendedMemoryEntry = {
     key,
     content,
+    summary: summary ?? existing?.summary,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };

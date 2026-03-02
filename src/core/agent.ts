@@ -19,7 +19,7 @@ import {
 } from './session-manager.js';
 import { getUserWorkspacePath } from '../user/store.js';
 import { buildCanUseTool, buildSandboxSettings, resolveUserPermissions } from './permissions.js';
-import { getClaudeSettings } from '../config/claude-settings.js';
+import { getProjectLocalSettings } from '../config/claude-settings.js';
 
 /** 每个用户的 agent 会话状态（内存中）。 */
 interface AgentSession {
@@ -232,7 +232,9 @@ export async function sendToAgent(
     env: sdkEnv,
     mcpServers: {
       'better-claw': createAppMcpServer(),
-      ...getClaudeSettings().mcpServers,
+      // 仅传入 project/local 级 MCP servers。
+      // user 级由 SDK 通过 settingSources: ['user'] 自行加载。
+      ...getProjectLocalSettings().mcpServers,
     },
     allowedTools: [
       'mcp__better-claw__memory_read',
@@ -253,15 +255,16 @@ export async function sendToAgent(
     maxBudgetUsd: config.anthropic.maxBudgetUsd,
     thinking: { type: 'adaptive' as const },
     cwd: getUserWorkspacePath(userId),
-    // 不加载任何外部 settings 文件（SDK 隔离模式）。
-    // 防止 ~/.claude/settings.local.json 中的 WebFetch(domain:...) 规则
-    // 被 SDK 转化为沙箱网络限制，导致非白名单域名的网络请求被拦截。
-    // Better-Claw 自行读取 Claude settings 并选择性继承 mcpServers / disallowedTools，
-    // 通过对应的 SDK option 注入（见 claude-settings.ts）。
-    settingSources: [],
-    ...(getClaudeSettings().disallowedTools.length > 0
-      ? { disallowedTools: getClaudeSettings().disallowedTools }
-      : {}),
+    // 加载 user 级 settings（~/.claude/settings.json），启用 ~/.claude/skills/ 原生 skill 发现。
+    // 不加载 local 级 settings，避免其中 WebFetch(domain:...) 权限规则被 SDK 转化为沙箱限制。
+    // project/local 级 MCP servers 和 disallowedTools 由 Better-Claw 通过对应 SDK option 注入。
+    settingSources: ['user' as const],
+    disallowedTools: [
+      // 在 bypassPermissions 模式下，plan mode 的审批流程无法正常工作（用户看不到 plan）。
+      'EnterPlanMode',
+      'ExitPlanMode',
+      ...getProjectLocalSettings().disallowedTools,
+    ],
   };
 
   // 捕获 SDK 子进程的 stderr，用于错误诊断。

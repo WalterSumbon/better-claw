@@ -7,6 +7,7 @@ import {
   resetClaudeSettings,
   initClaudeSettings,
   getClaudeSettings,
+  getProjectLocalSettings,
   reloadClaudeSettings,
 } from '../../src/config/claude-settings.js';
 import { createLogger, destroyLogger } from '../../src/logger/index.js';
@@ -360,6 +361,140 @@ describe('claude-settings', () => {
       expect(result.mcpServers['sse-server'].type).toBe('sse');
       expect(result.mcpServers['sse-server'].headers?.Authorization).toBe('Bearer token');
       expect(result.mcpServers['http-server'].type).toBe('http');
+    });
+  });
+
+  // ── excludeLayers 参数 ──
+
+  describe('excludeLayers', () => {
+    it('should exclude user layer when excludeLayers includes "user"', () => {
+      // user layer
+      writeSettings(join(fakeHome, '.claude', 'settings.json'), {
+        mcpServers: {
+          'user-server': { type: 'stdio', command: 'user-cmd' },
+        },
+        disallowedTools: ['UserTool'],
+      });
+
+      // project layer
+      writeSettings(join(tmpDir, '.claude', 'settings.json'), {
+        mcpServers: {
+          'project-server': { type: 'stdio', command: 'project-cmd' },
+        },
+        disallowedTools: ['ProjectTool'],
+      });
+
+      const result = loadClaudeSettings(['user']);
+
+      // user layer should be excluded
+      expect(result.mcpServers['user-server']).toBeUndefined();
+      expect(result.disallowedTools).not.toContain('UserTool');
+
+      // project layer should be included
+      expect(result.mcpServers['project-server']).toBeDefined();
+      expect(result.disallowedTools).toContain('ProjectTool');
+    });
+
+    it('should exclude local layer when excludeLayers includes "local"', () => {
+      writeSettings(join(tmpDir, '.claude', 'settings.json'), {
+        mcpServers: { 'project-srv': { command: 'p' } },
+      });
+      writeSettings(join(tmpDir, '.claude', 'settings.local.json'), {
+        mcpServers: { 'local-srv': { command: 'l' } },
+      });
+
+      const result = loadClaudeSettings(['local']);
+
+      expect(result.mcpServers['project-srv']).toBeDefined();
+      expect(result.mcpServers['local-srv']).toBeUndefined();
+    });
+
+    it('should exclude multiple layers', () => {
+      writeSettings(join(fakeHome, '.claude', 'settings.json'), {
+        mcpServers: { 'user-srv': { command: 'u' } },
+      });
+      writeSettings(join(tmpDir, '.claude', 'settings.json'), {
+        mcpServers: { 'project-srv': { command: 'p' } },
+      });
+      writeSettings(join(tmpDir, '.claude', 'settings.local.json'), {
+        mcpServers: { 'local-srv': { command: 'l' } },
+      });
+
+      const result = loadClaudeSettings(['user', 'local']);
+
+      expect(result.mcpServers['user-srv']).toBeUndefined();
+      expect(result.mcpServers['project-srv']).toBeDefined();
+      expect(result.mcpServers['local-srv']).toBeUndefined();
+    });
+  });
+
+  // ── getProjectLocalSettings ──
+
+  describe('getProjectLocalSettings', () => {
+    it('should return only project + local settings, excluding user layer', () => {
+      // user layer
+      writeSettings(join(fakeHome, '.claude', 'settings.json'), {
+        mcpServers: {
+          'user-only-server': { type: 'stdio', command: 'user-cmd' },
+          'shared-server': { type: 'stdio', command: 'user-version' },
+        },
+        disallowedTools: ['UserOnlyTool'],
+      });
+
+      // project layer
+      writeSettings(join(tmpDir, '.claude', 'settings.json'), {
+        mcpServers: {
+          'project-server': { type: 'stdio', command: 'project-cmd' },
+          'shared-server': { type: 'stdio', command: 'project-version' },
+        },
+        disallowedTools: ['ProjectTool'],
+      });
+
+      // Reset cache so getProjectLocalSettings re-evaluates.
+      resetClaudeSettings();
+      const result = getProjectLocalSettings();
+
+      // user-only servers should NOT be present
+      expect(result.mcpServers['user-only-server']).toBeUndefined();
+      expect(result.disallowedTools).not.toContain('UserOnlyTool');
+
+      // project servers should be present
+      expect(result.mcpServers['project-server']).toBeDefined();
+      expect(result.disallowedTools).toContain('ProjectTool');
+
+      // shared server should be project version (user excluded)
+      expect(result.mcpServers['shared-server'].command).toBe('project-version');
+    });
+
+    it('should cache the result (same reference on repeated calls)', () => {
+      writeSettings(join(tmpDir, '.claude', 'settings.json'), {
+        mcpServers: { 'srv': { command: 'test' } },
+      });
+
+      resetClaudeSettings();
+      const first = getProjectLocalSettings();
+      const second = getProjectLocalSettings();
+      expect(first).toBe(second);
+    });
+
+    it('should refresh on reloadClaudeSettings', () => {
+      writeSettings(join(tmpDir, '.claude', 'settings.json'), {
+        mcpServers: { 'v1': { command: 'v1' } },
+      });
+
+      resetClaudeSettings();
+      const before = getProjectLocalSettings();
+      expect(before.mcpServers['v1']).toBeDefined();
+
+      // Change file and reload.
+      writeSettings(join(tmpDir, '.claude', 'settings.json'), {
+        mcpServers: { 'v2': { command: 'v2' } },
+      });
+
+      reloadClaudeSettings();
+      const after = getProjectLocalSettings();
+      expect(after.mcpServers['v1']).toBeUndefined();
+      expect(after.mcpServers['v2']).toBeDefined();
     });
   });
 });
