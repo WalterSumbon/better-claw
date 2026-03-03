@@ -284,7 +284,23 @@ export function buildCanUseTool(userId: string): CanUseTool {
       return allow();
     }
 
-    if (toolName.startsWith('mcp__') || toolName === 'Bash') {
+    if (toolName.startsWith('mcp__')) {
+      return allow();
+    }
+
+    // Bash: 由 sandbox 保护，但必须阻止 dangerouslyDisableSandbox 绕过沙箱。
+    if (toolName === 'Bash') {
+      if (
+        input != null &&
+        typeof input === 'object' &&
+        'dangerouslyDisableSandbox' in input &&
+        (input as Record<string, unknown>).dangerouslyDisableSandbox
+      ) {
+        return {
+          behavior: 'deny' as const,
+          message: 'Permission denied: non-admin users cannot disable the Bash sandbox.',
+        };
+      }
       return allow();
     }
 
