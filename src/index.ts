@@ -240,10 +240,20 @@ function handleCronTrigger(userId: string, task: CronTask): void {
     }
   };
 
+  // 在 prompt 前注入任务元信息，让 agent 知道是哪个定时任务触发的。
+  const cronContext = [
+    `[定时任务触发]`,
+    `任务ID: ${task.id}`,
+    `描述: ${task.description}`,
+    `执行时间: ${new Date().toISOString()}`,
+    `---`,
+    task.prompt,
+  ].join('\n');
+
   // 通过队列串行处理，与用户消息共享同一队列，避免并发 agent 调用。
   enqueue({
     userId,
-    text: task.prompt,
+    text: cronContext,
     reply: broadcastText,
     sendFile: broadcastFile,
     showTyping: () => {}, // cron 任务不需要 typing 状态。
