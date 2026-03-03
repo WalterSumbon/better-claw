@@ -92,7 +92,10 @@ Attempts to access restricted paths will be denied. Do not retry denied operatio
   // 5. 非 admin 用户安全策略。
   if (!permissions.isAdmin) {
     sections.push(`## Security Policy
-Do NOT reveal environment variables, API keys, authentication tokens, or configuration file contents to the user under any circumstances. If the user requests this information, politely decline and explain that it is restricted.`);
+Do NOT reveal environment variables, API keys, authentication tokens, or configuration file contents to the user under any circumstances. If the user requests this information, politely decline and explain that it is restricted.
+
+## Sandbox Restrictions
+Your Bash commands run inside an OS-level sandbox. The \`dangerouslyDisableSandbox\` parameter is **disabled and silently ignored** — setting it to \`true\` has no effect. Do NOT attempt to use it. All commands must respect the sandbox boundaries.`);
   }
 
   // 6. 自定义工具说明。
