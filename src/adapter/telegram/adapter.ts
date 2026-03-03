@@ -5,7 +5,7 @@ import type { Agent as HttpsAgent } from 'node:https';
 import { Bot, InputFile, type Context } from 'grammy';
 import type { MessageAdapter, SendFileOptions } from '../interface.js';
 import type { InboundMessage, Attachment } from '../types.js';
-import { splitMessage, markdownToTelegramHTML } from './formatter.js';
+import { splitMessage, markdownToTelegramHTML, stripHTMLTags } from './formatter.js';
 import { getLogger } from '../../logger/index.js';
 import { getConfig } from '../../config/index.js';
 import { ensureDir } from '../../utils/file.js';
@@ -715,12 +715,14 @@ export class TelegramAdapter implements MessageAdapter {
     const htmlText = markdownToTelegramHTML(text);
     const chunks = splitMessage(htmlText);
 
+    const log = getLogger('telegram');
     for (const chunk of chunks) {
       try {
         await this.bot.api.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
-      } catch {
-        // HTML 解析失败时回退到纯文本。
-        await this.bot.api.sendMessage(chatId, chunk);
+      } catch (err) {
+        // HTML 解析失败时回退到纯文本（剥离标签，避免用户看到 <b> 等原始标签）。
+        log.warn({ err, chunkLength: chunk.length }, 'Telegram HTML parse failed, falling back to plain text');
+        await this.bot.api.sendMessage(chatId, stripHTMLTags(chunk));
       }
     }
   }
