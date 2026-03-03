@@ -374,6 +374,10 @@ export function buildSandboxSettings(userId: string): SandboxSettings {
   return {
     enabled: true,
     autoAllowBashIfSandboxed: true,
+    // 从根源禁止 dangerouslyDisableSandbox 参数绕过沙箱。
+    // SDK 会直接忽略该参数，所有命令必须在沙箱内执行。
+    // canUseTool 中的检查作为额外防线保留。
+    allowUnsandboxedCommands: false,
     filesystem: {
       allowWrite: allowWrite.length > 0 ? allowWrite : undefined,
       denyWrite: denyWrite.length > 0 ? denyWrite : undefined,
