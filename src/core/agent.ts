@@ -263,6 +263,8 @@ export async function sendToAgent(
       // 在 bypassPermissions 模式下，plan mode 的审批流程无法正常工作（用户看不到 plan）。
       'EnterPlanMode',
       'ExitPlanMode',
+      // AskUserQuestion 在 bypassPermissions 模式下会被自动批准，用户根本看不到问题。
+      'AskUserQuestion',
       ...getProjectLocalSettings().disallowedTools,
     ],
   };
