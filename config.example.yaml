@@ -150,27 +150,43 @@ permissionMode: "default"
 #
 # 权限组（Permission Group）：
 #   - 每个用户属于且仅属于一个权限组（通过 profile.permissionGroup 指定，或使用 defaultGroup）。
-#   - 每组包含一个有序的规则列表（rules），从上到下依次匹配。
-#   - 基础状态为"完全可读可写"（继承自 admin），规则逐条覆盖。
-#   - 最后一条匹配的规则决定最终结果。
+#   - 每组的 filesystem 配置直接映射 SDK sandbox 的三个文件系统数组。
 #   - 支持 inherits 继承另一个组的规则（默认继承 admin）。
+#   - 子组的配置追加在父组之后（数组合并）。
+#
+# SDK Sandbox Filesystem 模型：
+#
+#   allowWrite（写入白名单）：
+#     - 指定后进入白名单模式：写入默认拒绝，仅列出的路径可写。
+#     - 未指定时写入默认允许。
+#
+#   denyWrite（写入黑名单）：
+#     - 进一步限制写入，优先级高于 allowWrite。
+#     - 可在 allowWrite 允许的目录下"挖掉"特定子路径的写权限。
+#
+#   denyRead（读取黑名单）：
+#     - 禁止读取。SDK 无 allowRead 机制——
+#       一旦父路径被 deny，子路径无法在 sandbox 层面豁免。
 #
 # 工作组（Work Group）：
 #   - 用于跨用户协作，共享一个 workspace 目录。
 #   - 成员以 "rw"（读写）或 "r"（只读）权限加入。
+#   - rw 成员的工作组 workspace 自动追加到 allowWrite。
 #   - 一个用户可以同时属于多个工作组。
 #
-# ── 规则评估流程 ──
-#
-#   1. 从继承链的根（admin = 全部允许）开始。
-#   2. 父组规则先生效，子组规则后生效（越具体的组越靠后，优先级越高）。
-#   3. 工作组规则追加在最末尾。
-#   4. 对于某次路径访问，从上到下扫描所有规则，最后命中的规则决定 allow / deny。
+# 路径变量（运行时自动替换为绝对路径）：
+#   ${userWorkspace} — 当前用户的 workspace
+#   ${userDir}       — 当前用户的数据目录
+#   ${dataDir}       — 全局数据目录
+#   ${home}          — 系统用户主目录
+#   ${configFile}    — 配置文件路径（未从文件加载时自动跳过该条目）
+#   ${otherUserDir}  — 展开为所有其他用户的目录（每个用户一条路径）
 #
 # ── 双层隔离 ──
 #
 #   1. canUseTool 回调 — 对 Read/Write/Edit/Glob/Grep 等内置工具做路径级检查。
 #   2. Sandbox（OS 级）— 对 Bash 命令做进程级沙箱隔离。
+#   两层使用相同的 allowWrite / denyWrite / denyRead 配置。
 #
 permissions:
   # --------------------------------------------------------------------------
@@ -179,83 +195,71 @@ permissions:
   # 每个键是组名，值是该组的配置。
   #
   # 组配置字段：
-  #   inherits: 继承的父组名（可选，默认 "admin"）。
-  #   rules:    有序规则列表（可选，admin 组通常为空）。
-  #
-  # 单条规则字段：
-  #   action: "allow" 或 "deny"
-  #   access: "read"、"write" 或 "readwrite"
-  #   path:   目标路径，支持以下变量（运行时自动替换为绝对路径）：
-  #             ${userWorkspace} — 当前用户的 workspace（<dataDir>/users/<userId>/workspace/）
-  #             ${userDir}       — 当前用户的数据目录（<dataDir>/users/<userId>/）
-  #             ${dataDir}       — 全局数据目录（<dataDir>/）
-  #           特殊值 "*" 匹配所有路径。
+  #   inherits:   继承的父组名（可选，默认 "admin"）。
+  #   filesystem:  文件系统访问规则（可选，直接映射 SDK sandbox）。
+  #     allowWrite: 写入白名单路径列表（指定后写入变为白名单模式）。
+  #     denyWrite:  写入黑名单路径列表（优先级高于 allowWrite）。
+  #     denyRead:   读取黑名单路径列表。
   #
   groups:
-    # 管理员组：无规则 = 完全可读可写，所有权限组的默认继承源。
+    # 管理员组：无 filesystem = 完全可读可写，所有权限组的默认继承源。
     admin: {}
 
     # 普通用户组：
-    #   从 admin 继承（完全可读可写），然后逐条收紧：
-    #   1. 禁止写入所有路径（全局只读，阻止全局安装、修改系统文件等）。
-    #   2. 禁止整个数据目录的读写（隔离其他用户的数据、日志等）。
-    #   3. 允许读取自己的用户目录（profile、session、sessions 等均为只读）。
-    #   4. 允许读写自己的 memory 目录（core/extended memory 存储）。
-    #   5. 允许读写自己的 workspace（agent 工作区，包管理器局部安装在此进行）。
+    #   从 admin 继承（完全可读可写），然后通过 filesystem 收紧：
+    #
+    #   allowWrite:
+    #     - ${userDir}/memory    — memory 目录可写
+    #     - ${userWorkspace}     — workspace 可写
+    #     （其余路径在 allowWrite 白名单模式下默认拒绝写入）
+    #
+    #   denyWrite / denyRead:
+    #     - ${otherUserDir}      — 禁止读写其他用户的目录
     #
     #   最终效果（userDir 下各路径）：
-    #     profile.json        → 只读（系统管理，用户不可篡改身份/权限组）
-    #     session.json         → 只读（会话元数据由系统维护）
-    #     sessions/            → 只读（历史会话归档，仅供回顾）
-    #     cumulative-summary.json → 只读（长期记忆摘要由系统生成）
-    #     crons.json           → 只读（定时任务通过 MCP 工具管理，不需要直接写权限）
-    #     memory/              → 可读可写（通过 MCP 工具或 agent 直接读写）
-    #     workspace/           → 可读可写（agent 主要工作区）
+    #     profile.json              → 只读
+    #     session.json / sessions/  → 只读
+    #     cumulative-summary.json   → 只读
+    #     crons.json                → 只读
+    #     memory/                   → 可读可写（在 allowWrite 中）
+    #     workspace/                → 可读可写（在 allowWrite 中）
+    #     其他用户目录              → 不可读不可写
     user:
       # inherits: "admin"  # 可省略，默认就是 admin
-      rules:
-        - action: deny
-          access: write
-          path: "*"
-        - action: deny
-          access: readwrite
-          path: "${dataDir}"
-        - action: allow
-          access: read
-          path: "${userDir}"
-        - action: allow
-          access: readwrite
-          path: "${userDir}/memory"
-        - action: allow
-          access: readwrite
-          path: "${userWorkspace}"
+      filesystem:
+        allowWrite:
+          - "${userDir}/memory"
+          - "${userWorkspace}"
+        denyWrite:
+          - "${otherUserDir}"
+        denyRead:
+          - "${otherUserDir}"
 
     # ── 自定义权限组示例 ──
 
-    # 开发者组：继承 user 的所有规则，再额外开放 /opt/projects 的读写。
+    # 开发者组：继承 user 的 filesystem，再额外开放 /opt/projects 的写入。
     # developer:
     #   inherits: "user"
-    #   rules:
-    #     - action: allow
-    #       access: readwrite
-    #       path: "/opt/projects"
+    #   filesystem:
+    #     allowWrite:
+    #       - "/opt/projects"
 
     # 访客组：只能读自己的 workspace，不能写任何地方。
     # guest:
-    #   rules:
-    #     - action: deny
-    #       access: readwrite
-    #       path: "*"
-    #     - action: allow
-    #       access: read
-    #       path: "${userWorkspace}"
+    #   filesystem:
+    #     denyRead:
+    #       - "${otherUserDir}"
+    #     denyWrite:
+    #       - "${otherUserDir}"
+    #     # 不设 allowWrite → 写入默认允许，但配合其他限制…
+    #     # 如需完全禁写，可用 protectedPaths 或在业务层控制。
 
   # --------------------------------------------------------------------------
   # 工作组定义（可选）
   # --------------------------------------------------------------------------
   # 每个工作组拥有一个共享 workspace：<dataDir>/workgroups/<groupName>/workspace/
   # 目录会在首次访问时自动创建。
-  # 成员权限会作为额外的 allow 规则追加到规则链末尾。
+  # rw 成员的工作组 workspace 自动追加到 allowWrite。
   # 一个用户可以同时属于多个工作组。
   #
   # workGroups:
@@ -268,7 +272,6 @@ permissions:
   #       user_abc123: "r"
   #       user_ghi789: "rw"
 
-  # --------------------------------------------------------------------------
   # --------------------------------------------------------------------------
   # 环境变量过滤（非 admin 用户）
   # --------------------------------------------------------------------------
@@ -295,11 +298,12 @@ permissions:
   # 支持变量：${configFile}（配置文件路径）、${home}（系统主目录）、
   #           ${dataDir}、${userDir}、${userWorkspace}。
   # ${configFile} 在未加载配置文件时自动跳过。
-  # 设为空数组可禁用所有自动保护（不推荐）。
-  # 默认值：["${configFile}", "${home}/.claude"]
-  protectedPaths:
-    - "${configFile}"
-    - "${home}/.claude"
+  # 默认值：[]（空数组，不额外保护任何路径）。
+  # 如需保护特定路径，可添加条目，例如：
+  #   protectedPaths:
+  #     - "${configFile}"
+  #     - "${home}/.claude"
+  protectedPaths: []
 
   # 默认权限组
   # --------------------------------------------------------------------------

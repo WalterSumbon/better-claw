@@ -116,22 +116,32 @@ const DingtalkConfigSchema = z.object({
   commandPrefix: z.string().default('.'),
 });
 
-/** 单条权限规则 schema。 */
-const PermissionRuleSchema = z.object({
-  /** 动作：允许或拒绝。 */
-  action: z.enum(['allow', 'deny']),
-  /** 访问类型：读、写、或读写。 */
-  access: z.enum(['read', 'write', 'readwrite']),
-  /** 目标路径（支持 ${userWorkspace} 等变量，"*" 匹配所有路径）。 */
-  path: z.string(),
+/**
+ * 文件系统访问规则 schema。直接映射 SDK sandbox filesystem 设置。
+ *
+ * SDK sandbox 支持三个文件系统数组：
+ *   - allowWrite（写入白名单）：指定后写入默认拒绝，仅列出的路径可写。
+ *   - denyWrite（写入黑名单）：进一步限制写入，优先级高于 allowWrite。
+ *   - denyRead（读取黑名单）：拒绝读取，无对应的 allowRead 机制。
+ *
+ * 支持的路径变量：
+ *   ${userDir} / ${userWorkspace} / ${dataDir} / ${home} / ${configFile} / ${otherUserDir}
+ */
+const FilesystemConfigSchema = z.object({
+  /** 写入白名单。指定后进入白名单模式：仅列出的路径可写。 */
+  allowWrite: z.array(z.string()).optional(),
+  /** 写入黑名单。优先级高于 allowWrite。 */
+  denyWrite: z.array(z.string()).optional(),
+  /** 读取黑名单。SDK 无 allowRead 机制，被 deny 的父路径下子路径无法豁免。 */
+  denyRead: z.array(z.string()).optional(),
 });
 
 /** 权限组配置 schema。 */
 const PermissionGroupConfigSchema = z.object({
-  /** 继承的父权限组名称（默认 "admin"，即完全可读可写）。 */
+  /** 继承的父权限组名称（默认 "admin"，即无任何限制）。 */
   inherits: z.string().optional(),
-  /** 有序规则列表，从上到下依次生效，最后匹配的规则决定结果。 */
-  rules: z.array(PermissionRuleSchema).optional(),
+  /** 文件系统访问规则，直接映射 SDK sandbox filesystem 设置。 */
+  filesystem: FilesystemConfigSchema.optional(),
 });
 
 /** 工作组配置 schema。 */
@@ -146,12 +156,11 @@ const PermissionsConfigSchema = z.object({
   groups: z.record(z.string(), PermissionGroupConfigSchema).default(() => ({
     admin: {},
     user: {
-      rules: [
-        { action: 'deny' as const, access: 'write' as const, path: '*' },
-        { action: 'deny' as const, access: 'readwrite' as const, path: '${dataDir}' },
-        { action: 'allow' as const, access: 'read' as const, path: '${userDir}' },
-        { action: 'allow' as const, access: 'readwrite' as const, path: '${userWorkspace}' },
-      ],
+      filesystem: {
+        allowWrite: ['${userDir}/memory', '${userWorkspace}'],
+        denyWrite: ['${otherUserDir}'],
+        denyRead: ['${otherUserDir}'],
+      },
     },
   })),
   /** 工作组定义（可选）。 */
@@ -169,10 +178,7 @@ const PermissionsConfigSchema = z.object({
   /** 非 admin 用户自动追加的 deny readwrite 路径列表。
    *  支持变量：${configFile}（配置文件路径）、${home}（用户主目录）及其他标准变量。
    *  这些规则追加在规则链最末尾，不可被权限组或工作组规则覆盖。 */
-  protectedPaths: z.array(z.string()).default(() => [
-    '${configFile}',
-    '${home}/.claude',
-  ]),
+  protectedPaths: z.array(z.string()).default(() => []),
 });
 
 /** Skill 系统配置。 */
@@ -230,18 +236,17 @@ export const AppConfigSchema = z.object({
     groups: {
       admin: {},
       user: {
-        rules: [
-          { action: 'deny' as const, access: 'write' as const, path: '*' },
-          { action: 'deny' as const, access: 'readwrite' as const, path: '${dataDir}' },
-          { action: 'allow' as const, access: 'read' as const, path: '${userDir}' },
-          { action: 'allow' as const, access: 'readwrite' as const, path: '${userWorkspace}' },
-        ],
+        filesystem: {
+          allowWrite: ['${userDir}/memory', '${userWorkspace}'],
+          denyWrite: ['${otherUserDir}'],
+          denyRead: ['${otherUserDir}'],
+        },
       },
     },
     defaultGroup: 'user',
     envFilter: [] as string[],
     envExtra: {} as Record<string, string>,
-    protectedPaths: ['${configFile}', '${home}/.claude'],
+    protectedPaths: [] as string[],
   })),
   /** 会话管理配置。 */
   session: SessionConfigSchema.default(() => ({

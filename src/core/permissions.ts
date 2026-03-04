@@ -1,13 +1,16 @@
-import { resolve } from 'path';
+import { resolve, join } from 'path';
 import { homedir } from 'os';
 import type { CanUseTool, SandboxSettings } from '@anthropic-ai/claude-agent-sdk';
 import { getConfig, getConfigFilePath } from '../config/index.js';
-import { getUserDir, getUserWorkspacePath, getWorkGroupWorkspacePath } from '../user/store.js';
+import { getUserDir, getUserWorkspacePath, getWorkGroupWorkspacePath, listUserIds } from '../user/store.js';
 import { readProfile } from '../user/store.js';
-import type { ResolvedPermissions, ResolvedRule } from './permissions-types.js';
+import type { ResolvedPermissions, FilesystemConfig, PermissionGroupConfig } from './permissions-types.js';
 
-/** ${configFile} 占位符，当 configFilePath 为 null 时跳过该条规则。 */
+/** ${configFile} 占位符，当 configFilePath 为 null 时跳过该条目。 */
 const CONFIG_FILE_VAR = '${configFile}';
+
+/** ${otherUserDir} 占位符，展开为所有其他用户的目录。 */
+const OTHER_USER_DIR_VAR = '${otherUserDir}';
 
 /**
  * 对单个路径字符串执行变量替换。
@@ -18,6 +21,8 @@ const CONFIG_FILE_VAR = '${configFile}';
  * - ${dataDir}: 全局数据目录（绝对路径）
  * - ${home}: 当前系统用户主目录
  * - ${configFile}: 配置文件路径（可能为 null，此时返回 null）
+ *
+ * 注意：${otherUserDir} 不在此函数中处理，由 resolvePaths() 负责展开。
  *
  * @param pathStr - 包含变量占位符的路径。
  * @param userId - 当前用户 ID。
@@ -45,42 +50,98 @@ export function resolvePathVariable(pathStr: string, userId: string): string | n
 }
 
 /**
- * 展开继承链，将权限组的规则列表扁平化。
+ * 获取除当前用户以外的所有用户目录绝对路径。
  *
- * 遍历顺序：先递归展开父组规则，再追加当前组规则。
+ * @param userId - 当前用户 ID。
+ * @returns 其他用户目录的绝对路径数组。
+ */
+function getOtherUserDirs(userId: string): string[] {
+  const config = getConfig();
+  const dataDir = resolve(process.cwd(), config.dataDir);
+  const allUserIds = listUserIds();
+  return allUserIds
+    .filter((id) => id !== userId)
+    .map((id) => resolve(dataDir, 'users', id));
+}
+
+/**
+ * 对路径数组执行变量替换，支持 ${otherUserDir} 展开。
+ *
+ * ${otherUserDir} 会展开为除当前用户以外的所有用户目录路径。
+ * 如果条目为 "${otherUserDir}/workspace"，则每个其他用户都会生成一条
+ * "/path/to/data/users/user_xxx/workspace"。
+ *
+ * @param paths - 原始路径数组（可能包含变量）。
+ * @param userId - 当前用户 ID。
+ * @returns 解析后的绝对路径数组。
+ */
+function resolvePaths(paths: string[], userId: string): string[] {
+  const result: string[] = [];
+  for (const p of paths) {
+    if (p.includes(OTHER_USER_DIR_VAR)) {
+      // 展开 ${otherUserDir} 为所有其他用户目录。
+      const otherDirs = getOtherUserDirs(userId);
+      for (const dir of otherDirs) {
+        const expanded = p.replace(/\$\{otherUserDir\}/g, dir);
+        // expanded 已经是绝对路径了（otherUserDir 替换后），
+        // 但仍需处理其他可能的变量。
+        const resolved = resolvePathVariable(expanded, userId);
+        if (resolved !== null) {
+          result.push(resolved);
+        }
+      }
+    } else {
+      const resolved = resolvePathVariable(p, userId);
+      if (resolved !== null) {
+        result.push(resolved);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * 展开继承链，合并权限组的 filesystem 配置。
+ *
+ * 遍历顺序：先递归展开父组，再合并当前组。
+ * 子组的数组条目追加在父组之后。
  * 检测循环继承并在发现时中止。
  *
  * @param groupName - 权限组名称。
  * @param groups - 所有权限组配置。
  * @param visited - 已访问的组名集合（用于循环检测）。
- * @returns 扁平化的原始规则列表（路径尚未替换变量）。
+ * @returns 合并后的 filesystem 配置（路径尚未替换变量）。
  */
-function flattenGroupRules(
+function flattenGroupFilesystem(
   groupName: string,
-  groups: Record<string, { inherits?: string; rules?: Array<{ action: string; access: string; path: string }> }>,
+  groups: Record<string, PermissionGroupConfig>,
   visited: Set<string> = new Set(),
-): Array<{ action: string; access: string; path: string }> {
+): FilesystemConfig {
   if (visited.has(groupName)) {
-    return [];
+    return {};
   }
   visited.add(groupName);
 
   // admin 组是根，无规则，代表完全可读可写。
   if (groupName === 'admin') {
-    return [];
+    return {};
   }
 
   const groupConfig = groups[groupName];
   if (!groupConfig) {
-    return [];
+    return {};
   }
 
   // 默认继承 admin。
   const parentName = groupConfig.inherits ?? 'admin';
-  const parentRules = flattenGroupRules(parentName, groups, visited);
-  const ownRules = groupConfig.rules ?? [];
+  const parentFs = flattenGroupFilesystem(parentName, groups, visited);
+  const ownFs = groupConfig.filesystem ?? {};
 
-  return [...parentRules, ...ownRules];
+  return {
+    allowWrite: [...(parentFs.allowWrite ?? []), ...(ownFs.allowWrite ?? [])],
+    denyWrite: [...(parentFs.denyWrite ?? []), ...(ownFs.denyWrite ?? [])],
+    denyRead: [...(parentFs.denyRead ?? []), ...(ownFs.denyRead ?? [])],
+  };
 }
 
 /**
@@ -88,9 +149,10 @@ function flattenGroupRules(
  *
  * 流程：
  * 1. 读取用户 permissionGroup（从 profile 或 defaultGroup）。
- * 2. 展开继承链，得到扁平化规则列表。
- * 3. 对每条规则做变量替换。
- * 4. 查找用户所属的工作组，追加对应的 allow 规则。
+ * 2. 展开继承链，合并 filesystem 配置。
+ * 3. 对每个路径数组做变量替换（含 ${otherUserDir} 展开）。
+ * 4. 查找用户所属的工作组，追加对应的 allowWrite 条目。
+ * 5. 追加 protectedPaths。
  *
  * @param userId - 用户 ID。
  * @returns 解析后的权限对象。
@@ -105,28 +167,25 @@ export function resolveUserPermissions(userId: string): ResolvedPermissions {
 
   // admin 组直接返回，无需规则。
   if (groupName === 'admin') {
-    return { isAdmin: true, rules: [] };
+    return {
+      isAdmin: true,
+      filesystem: { allowWrite: [], denyWrite: [], denyRead: [] },
+      protectedPaths: [],
+    };
   }
 
   // 展开继承链。
-  const rawRules = flattenGroupRules(
+  const rawFs = flattenGroupFilesystem(
     groupName,
-    permConfig.groups as Record<string, { inherits?: string; rules?: Array<{ action: string; access: string; path: string }> }>,
+    permConfig.groups as unknown as Record<string, PermissionGroupConfig>,
   );
 
-  // 变量替换（resolvePathVariable 返回 null 时跳过该条规则）。
-  const rules: ResolvedRule[] = [];
-  for (const r of rawRules) {
-    const resolvedPath = resolvePathVariable(r.path, userId);
-    if (resolvedPath === null) {
-      continue;
-    }
-    rules.push({
-      action: r.action as 'allow' | 'deny',
-      access: r.access as 'read' | 'write' | 'readwrite',
-      path: resolvedPath,
-    });
-  }
+  // 变量替换。
+  const filesystem = {
+    allowWrite: resolvePaths(rawFs.allowWrite ?? [], userId),
+    denyWrite: resolvePaths(rawFs.denyWrite ?? [], userId),
+    denyRead: resolvePaths(rawFs.denyRead ?? [], userId),
+  };
 
   // 合并工作组共享 workspace。
   const workGroups = permConfig.workGroups;
@@ -139,34 +198,45 @@ export function resolveUserPermissions(userId: string): ResolvedPermissions {
       }
       const wgWorkspace = resolve(process.cwd(), getWorkGroupWorkspacePath(wgName));
       if (accessLevel === 'rw') {
-        rules.push({ action: 'allow', access: 'readwrite', path: wgWorkspace });
-      } else {
-        rules.push({ action: 'allow', access: 'read', path: wgWorkspace });
+        filesystem.allowWrite.push(wgWorkspace);
       }
+      // r 成员的 workspace 不在 denyRead 中（默认可读），无需额外操作。
     }
   }
 
-  // 追加 protectedPaths 中定义的 deny readwrite 规则（最末尾，不可被覆盖）。
-  const protectedPaths = permConfig.protectedPaths ?? [];
-  for (const pp of protectedPaths) {
-    const resolvedPath = resolvePathVariable(pp, userId);
-    if (resolvedPath === null) {
-      continue;
-    }
-    rules.push({ action: 'deny', access: 'readwrite', path: resolvedPath });
-  }
+  // 解析 protectedPaths。
+  const protectedPaths = resolvePaths(permConfig.protectedPaths ?? [], userId);
 
-  return { isAdmin: false, rules };
+  return { isAdmin: false, filesystem, protectedPaths };
+}
+
+/**
+ * 判断 parentDir 是否包含 childPath（基于路径前缀匹配）。
+ *
+ * @param parentDir - 父目录路径。
+ * @param childPath - 子路径。
+ * @returns childPath 是否在 parentDir 下（含自身）。
+ */
+function pathContains(parentDir: string, childPath: string): boolean {
+  const normalizedParent = parentDir.endsWith('/') ? parentDir : parentDir + '/';
+  return childPath === parentDir || childPath.startsWith(normalizedParent);
 }
 
 /**
  * 检查指定路径在给定权限下是否被允许。
  *
- * 评估逻辑：
- * 1. admin → 直接放行。
- * 2. 基础状态为 allow（因为继承自 admin = 完全可读可写）。
- * 3. 规则从上到下依次匹配，每条匹配的规则覆盖前一个结果。
- * 4. 返回最终结果。
+ * 评估逻辑（直接映射 SDK sandbox filesystem 语义）：
+ *
+ * 写入检查：
+ *   1. 如果路径命中 protectedPaths → deny。
+ *   2. 如果路径命中 denyWrite → deny（优先级最高）。
+ *   3. 如果 allowWrite 非空且路径不在 allowWrite 下 → deny。
+ *   4. 否则 → allow。
+ *
+ * 读取检查：
+ *   1. 如果路径命中 protectedPaths → deny。
+ *   2. 如果路径命中 denyRead → deny。
+ *   3. 否则 → allow。
  *
  * @param inputPath - 待检查的路径（绝对或相对）。
  * @param permissions - 已解析的权限对象。
@@ -185,35 +255,39 @@ export function isPathAllowed(
   }
 
   const absPath = resolve(cwd ?? process.cwd(), inputPath);
+  const { filesystem, protectedPaths } = permissions;
 
-  // 基础状态：allow（继承自 admin）。
-  let result = true;
-
-  for (const rule of permissions.rules) {
-    // 检查 access 是否匹配当前 mode。
-    if (rule.access !== 'readwrite' && rule.access !== mode) {
-      continue;
-    }
-
-    // 检查路径是否匹配。
-    if (rule.path === '*' || pathContains(rule.path, absPath)) {
-      result = rule.action === 'allow';
+  // protectedPaths 始终拒绝读和写。
+  for (const pp of protectedPaths) {
+    if (pathContains(pp, absPath)) {
+      return false;
     }
   }
 
-  return result;
-}
+  if (mode === 'write') {
+    // denyWrite 优先级最高。
+    for (const dw of filesystem.denyWrite) {
+      if (pathContains(dw, absPath)) {
+        return false;
+      }
+    }
+    // allowWrite 白名单模式：如果非空，路径必须在白名单中。
+    if (filesystem.allowWrite.length > 0) {
+      const allowed = filesystem.allowWrite.some((aw) => pathContains(aw, absPath));
+      if (!allowed) {
+        return false;
+      }
+    }
+    return true;
+  }
 
-/**
- * 判断 parentDir 是否包含 childPath（基于路径前缀匹配）。
- *
- * @param parentDir - 父目录路径。
- * @param childPath - 子路径。
- * @returns childPath 是否在 parentDir 下（含自身）。
- */
-function pathContains(parentDir: string, childPath: string): boolean {
-  const normalizedParent = parentDir.endsWith('/') ? parentDir : parentDir + '/';
-  return childPath === parentDir || childPath.startsWith(normalizedParent);
+  // mode === 'read'
+  for (const dr of filesystem.denyRead) {
+    if (pathContains(dr, absPath)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -334,7 +408,8 @@ export function buildCanUseTool(userId: string): CanUseTool {
 /**
  * 构建 sandbox 设置，对 Bash 命令执行进程级沙箱。
  *
- * 从规则链中提取 deny 规则转换为 sandbox filesystem 配置。
+ * 直接将 ResolvedPermissions.filesystem 透传给 SDK sandbox。
+ * protectedPaths 同时追加到 denyRead 和 denyWrite。
  * admin 用户不启用 sandbox。
  *
  * @param userId - 用户 ID。
@@ -347,39 +422,19 @@ export function buildSandboxSettings(userId: string): SandboxSettings {
     return { enabled: false };
   }
 
-  // 从规则链中提取用于 sandbox 的 deny/allow 列表。
-  // sandbox filesystem 只支持 allowWrite / denyWrite / denyRead。
-  const denyRead: string[] = [];
-  const denyWrite: string[] = [];
-  const allowWrite: string[] = [];
+  const { filesystem, protectedPaths } = permissions;
 
-  for (const rule of permissions.rules) {
-    if (rule.path === '*') {
-      continue;
-    }
-    if (rule.action === 'deny') {
-      if (rule.access === 'read' || rule.access === 'readwrite') {
-        denyRead.push(rule.path);
-      }
-      if (rule.access === 'write' || rule.access === 'readwrite') {
-        denyWrite.push(rule.path);
-      }
-    } else if (rule.action === 'allow') {
-      if (rule.access === 'write' || rule.access === 'readwrite') {
-        allowWrite.push(rule.path);
-      }
-    }
-  }
+  // protectedPaths 追加到 denyRead 和 denyWrite，确保 sandbox 层也能拦截。
+  const denyRead = [...filesystem.denyRead, ...protectedPaths];
+  const denyWrite = [...filesystem.denyWrite, ...protectedPaths];
 
   return {
     enabled: true,
     autoAllowBashIfSandboxed: true,
     // 从根源禁止 dangerouslyDisableSandbox 参数绕过沙箱。
-    // SDK 会直接忽略该参数，所有命令必须在沙箱内执行。
-    // canUseTool 中的检查作为额外防线保留。
     allowUnsandboxedCommands: false,
     filesystem: {
-      allowWrite: allowWrite.length > 0 ? allowWrite : undefined,
+      allowWrite: filesystem.allowWrite.length > 0 ? filesystem.allowWrite : undefined,
       denyWrite: denyWrite.length > 0 ? denyWrite : undefined,
       denyRead: denyRead.length > 0 ? denyRead : undefined,
     },

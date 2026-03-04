@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join, resolve } from 'path';
+import { writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { createTestEnv } from '../helpers/setup.js';
 import { createUser } from '../../src/user/manager.js';
@@ -137,8 +138,27 @@ describe('Security', () => {
   // ── protectedPaths ──
 
   describe('protectedPaths', () => {
-    it('should deny access to ~/.claude for non-admin users by default', () => {
+    it('should not protect any paths by default (empty protectedPaths)', () => {
       const user = createUser('pp-default');
+      const perms = resolveUserPermissions(user.userId);
+      const claudeDir = resolve(homedir(), '.claude');
+
+      // 默认 protectedPaths 为空，~/.claude 不被自动保护。
+      // 访问权限取决于权限组的 filesystem 配置（默认 user 组有 allowWrite 白名单，
+      // ~/.claude 不在 allowWrite 中所以写入被拒绝）。
+      expect(isPathAllowed(join(claudeDir, 'config.json'), perms, 'write')).toBe(false);
+    });
+
+    it('should deny access to ~/.claude when explicitly configured', () => {
+      reconfigure({
+        permissions: {
+          groups: { admin: {}, user: {} },
+          defaultGroup: 'user',
+          protectedPaths: ['${home}/.claude'],
+        },
+      });
+
+      const user = createUser('pp-claude-explicit');
       const perms = resolveUserPermissions(user.userId);
       const claudeDir = resolve(homedir(), '.claude');
 
@@ -161,7 +181,7 @@ describe('Security', () => {
     it('should use custom protectedPaths from config', () => {
       reconfigure({
         permissions: {
-          groups: { admin: {}, user: { rules: [] } },
+          groups: { admin: {}, user: {} },
           defaultGroup: 'user',
           protectedPaths: ['/etc/secrets', '${home}/.ssh'],
         },
@@ -179,7 +199,7 @@ describe('Security', () => {
     it('should allow disabling protectedPaths with empty array', () => {
       reconfigure({
         permissions: {
-          groups: { admin: {}, user: { rules: [] } },
+          groups: { admin: {}, user: {} },
           defaultGroup: 'user',
           protectedPaths: [],
         },
@@ -193,20 +213,37 @@ describe('Security', () => {
     });
 
     it('should skip ${configFile} rule when config is not loaded from file', () => {
-      // createTestEnv 使用 setConfig，configFilePath 为 null。
+      // 显式配置 protectedPaths 含 ${configFile}，但 configFilePath 为 null 时应跳过。
+      reconfigure({
+        permissions: {
+          groups: { admin: {}, user: {} },
+          defaultGroup: 'user',
+          protectedPaths: ['${configFile}'],
+        },
+      });
+
       const user = createUser('pp-no-cf');
       const perms = resolveUserPermissions(user.userId);
 
-      // 规则中不应包含 configFile 相关的 deny（因为路径为 null 被跳过了）。
-      const configRules = perms.rules.filter(
-        (r) => r.action === 'deny' && r.path.includes('config.yaml'),
+      // protectedPaths 中不应包含 configFile 相关的路径（因为路径为 null 被跳过了）。
+      const configPaths = perms.protectedPaths.filter(
+        (p) => p.includes('config.yaml'),
       );
-      expect(configRules.length).toBe(0);
+      expect(configPaths.length).toBe(0);
     });
 
-    it('should deny access to configFile when loaded from file', () => {
+    it('should deny access to configFile when explicitly protected', () => {
       resetConfig();
       const configPath = join(dataDir, 'config.yaml');
+
+      // 写入包含 protectedPaths 的配置文件，然后通过 loadConfig 加载。
+      // 这样 configFilePath 才会被正确设置。
+      writeFileSync(configPath, [
+        'permissions:',
+        '  protectedPaths:',
+        '    - "${configFile}"',
+      ].join('\n'), 'utf-8');
+
       const config = loadConfig({ configPath, dataDir });
       createLogger(config.logging);
       loadBindingCache();
@@ -266,7 +303,7 @@ describe('Security', () => {
       try {
         reconfigure({
           permissions: {
-            groups: { admin: {}, user: { rules: [] } },
+            groups: { admin: {}, user: {} },
             defaultGroup: 'user',
             envFilter: ['MY_SECRET_*', 'ANTHROPIC_*'],
           },
@@ -275,7 +312,7 @@ describe('Security', () => {
           dataDir,
           logging: { directory: join(dataDir, 'logs') },
           permissions: {
-            groups: { admin: {}, user: { rules: [] } },
+            groups: { admin: {}, user: {} },
             defaultGroup: 'user',
             envFilter: ['MY_SECRET_*', 'ANTHROPIC_*'],
           },
@@ -307,7 +344,7 @@ describe('Security', () => {
       const user = createUser('env-extra');
       reconfigure({
         permissions: {
-          groups: { admin: {}, user: { rules: [] } },
+          groups: { admin: {}, user: {} },
           defaultGroup: 'user',
           envExtra: { CUSTOM_VAR: 'hello', ANOTHER: 'world' },
         },
@@ -316,7 +353,7 @@ describe('Security', () => {
         dataDir,
         logging: { directory: join(dataDir, 'logs') },
         permissions: {
-          groups: { admin: {}, user: { rules: [] } },
+          groups: { admin: {}, user: {} },
           defaultGroup: 'user',
           envExtra: { CUSTOM_VAR: 'hello', ANOTHER: 'world' },
         },
@@ -333,7 +370,7 @@ describe('Security', () => {
       reconfigure({
         anthropic: { apiKey: 'sk-test-key', baseUrl: 'https://proxy.example.com' },
         permissions: {
-          groups: { admin: {}, user: { rules: [] } },
+          groups: { admin: {}, user: {} },
           defaultGroup: 'user',
           envFilter: ['ANTHROPIC_*'],
         },
@@ -343,7 +380,7 @@ describe('Security', () => {
         logging: { directory: join(dataDir, 'logs') },
         anthropic: { apiKey: 'sk-test-key', baseUrl: 'https://proxy.example.com' },
         permissions: {
-          groups: { admin: {}, user: { rules: [] } },
+          groups: { admin: {}, user: {} },
           defaultGroup: 'user',
           envFilter: ['ANTHROPIC_*'],
         },
@@ -366,7 +403,7 @@ describe('Security', () => {
           dataDir,
           logging: { directory: join(dataDir, 'logs') },
           permissions: {
-            groups: { admin: {}, user: { rules: [] } },
+            groups: { admin: {}, user: {} },
             defaultGroup: 'user',
             envFilter: ['FILTERED_*'],
             envExtra: { FILTERED_VAR: 'from-extra' },

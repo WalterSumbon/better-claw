@@ -53,39 +53,50 @@ Because tool calls are invisible to the user, always include a brief text messag
   if (permissions.isAdmin) {
     sections.push(`## File Access Permissions\nYou have admin privileges with unrestricted file system access.`);
   } else {
-    // 生成原始规则列表供精确参考。
-    const ruleLines = permissions.rules.map(
-      (r) => `  ${r.action} ${r.access} ${r.path}`,
-    );
+    const { filesystem, protectedPaths } = permissions;
 
-    // 从规则中提取可写路径，生成人类可读的有效权限摘要。
-    const writablePaths: string[] = [];
-    const readOnlyPaths: string[] = [];
-    for (const rule of permissions.rules) {
-      if (rule.path === '*') continue;
-      if (rule.action === 'allow' && (rule.access === 'readwrite' || rule.access === 'write')) {
-        writablePaths.push(rule.path);
-      } else if (rule.action === 'allow' && rule.access === 'read') {
-        readOnlyPaths.push(rule.path);
-      }
-    }
-
+    // 生成有效权限摘要。
     const summaryLines: string[] = [];
-    if (readOnlyPaths.length > 0) {
-      summaryLines.push(`- Read-only: ${readOnlyPaths.join(', ')}`);
+    if (filesystem.allowWrite.length > 0) {
+      summaryLines.push(`- Writable: ${filesystem.allowWrite.join(', ')}`);
     }
-    if (writablePaths.length > 0) {
-      summaryLines.push(`- Writable:  ${writablePaths.join(', ')}`);
+    if (filesystem.denyWrite.length > 0) {
+      summaryLines.push(`- Write denied: ${filesystem.denyWrite.join(', ')}`);
     }
-    summaryLines.push('- All other paths: inaccessible');
+    if (filesystem.denyRead.length > 0) {
+      summaryLines.push(`- Read denied: ${filesystem.denyRead.join(', ')}`);
+    }
+    if (protectedPaths.length > 0) {
+      summaryLines.push(`- Protected (deny all): ${protectedPaths.join(', ')}`);
+    }
+    if (filesystem.allowWrite.length > 0) {
+      summaryLines.push('- All other paths: read-only (writes default-denied outside allowWrite)');
+    } else {
+      summaryLines.push('- All other paths: readable and writable (unless explicitly denied)');
+    }
+
+    // 生成 filesystem 配置明细。
+    const configLines: string[] = [];
+    if (filesystem.allowWrite.length > 0) {
+      configLines.push(`  allowWrite: [${filesystem.allowWrite.join(', ')}]`);
+    }
+    if (filesystem.denyWrite.length > 0) {
+      configLines.push(`  denyWrite: [${filesystem.denyWrite.join(', ')}]`);
+    }
+    if (filesystem.denyRead.length > 0) {
+      configLines.push(`  denyRead: [${filesystem.denyRead.join(', ')}]`);
+    }
+    if (protectedPaths.length > 0) {
+      configLines.push(`  protectedPaths: [${protectedPaths.join(', ')}]`);
+    }
 
     sections.push(`## File Access Permissions
 
 Effective access summary:
 ${summaryLines.join('\n')}
 
-Rule chain (starting from fully permitted, last matching rule wins):
-${ruleLines.join('\n')}
+Filesystem configuration:
+${configLines.join('\n')}
 
 Attempts to access restricted paths will be denied. Do not retry denied operations — inform the user that the path is outside their permitted scope.`);
   }

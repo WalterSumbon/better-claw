@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join, resolve } from 'path';
-import { mkdirSync, writeFileSync } from 'fs';
 import { createTestEnv } from '../helpers/setup.js';
 import { createUser } from '../../src/user/manager.js';
 import { readProfile, writeProfile } from '../../src/user/store.js';
@@ -19,12 +18,13 @@ import {
 /**
  * 权限系统单元测试。
  *
- * 测试规则链评估、继承机制、变量替换、工作组合并、
+ * 测试新的 filesystem 模型（allowWrite / denyWrite / denyRead），
+ * 继承机制、变量替换（含 ${otherUserDir}）、工作组合并、
  * canUseTool 回调和 sandbox 配置生成。
  */
 describe('Permissions', () => {
   let dataDir: string;
-  let cleanup: () => void;
+  let cleanup: () => Promise<void>;
 
   beforeEach(() => {
     const env = createTestEnv();
@@ -38,8 +38,6 @@ describe('Permissions', () => {
 
   /**
    * 使用自定义权限配置重新设置测试环境。
-   *
-   * @param permissionsOverride - 权限配置覆盖。
    */
   function reconfigurePermissions(permissionsOverride: Record<string, unknown>): void {
     resetConfig();
@@ -94,35 +92,34 @@ describe('Permissions', () => {
 
       const perms = resolveUserPermissions(user.userId);
       expect(perms.isAdmin).toBe(true);
-      expect(perms.rules).toEqual([]);
+      expect(perms.filesystem.allowWrite).toEqual([]);
+      expect(perms.filesystem.denyWrite).toEqual([]);
+      expect(perms.filesystem.denyRead).toEqual([]);
     });
 
-    it('should return default user group rules when no permissionGroup set', () => {
+    it('should return default user group filesystem when no permissionGroup set', () => {
       const user = createUser('default-user');
       const perms = resolveUserPermissions(user.userId);
 
       expect(perms.isAdmin).toBe(false);
-      // 4 条用户组规则 + 自动追加的安全 deny 规则（~/.claude，configFile 在测试中为 null）。
-      expect(perms.rules.length).toBeGreaterThanOrEqual(4);
-      expect(perms.rules[0].action).toBe('deny');
-      expect(perms.rules[0].access).toBe('write');
-      expect(perms.rules[0].path).toBe('*');
+      // 默认 user 组应有 allowWrite 条目（memory + workspace）。
+      expect(perms.filesystem.allowWrite.length).toBeGreaterThanOrEqual(2);
     });
 
-    it('should flatten inherited rules (parent first, child after)', () => {
+    it('should flatten inherited filesystem (parent first, child appended)', () => {
       reconfigurePermissions({
         groups: {
           admin: {},
           base: {
-            rules: [
-              { action: 'deny', access: 'write', path: '*' },
-            ],
+            filesystem: {
+              allowWrite: ['/base/path'],
+            },
           },
           child: {
             inherits: 'base',
-            rules: [
-              { action: 'allow', access: 'readwrite', path: '/opt/projects' },
-            ],
+            filesystem: {
+              allowWrite: ['/child/path'],
+            },
           },
         },
         defaultGroup: 'child',
@@ -131,20 +128,26 @@ describe('Permissions', () => {
       const user = createUser('inherit-test');
       const perms = resolveUserPermissions(user.userId);
 
-      // 2 条用户组规则 + 自动追加的安全 deny 规则。
-      expect(perms.rules.length).toBeGreaterThanOrEqual(2);
-      // 父组规则在前。
-      expect(perms.rules[0]).toEqual({ action: 'deny', access: 'write', path: '*' });
-      // 子组规则在后。
-      expect(perms.rules[1]).toEqual({ action: 'allow', access: 'readwrite', path: '/opt/projects' });
+      // 父组在前，子组在后。
+      expect(perms.filesystem.allowWrite).toContain('/base/path');
+      expect(perms.filesystem.allowWrite).toContain('/child/path');
+      const baseIdx = perms.filesystem.allowWrite.indexOf('/base/path');
+      const childIdx = perms.filesystem.allowWrite.indexOf('/child/path');
+      expect(baseIdx).toBeLessThan(childIdx);
     });
 
     it('should detect circular inheritance and not loop', () => {
       reconfigurePermissions({
         groups: {
           admin: {},
-          groupA: { inherits: 'groupB', rules: [{ action: 'deny', access: 'read', path: '/a' }] },
-          groupB: { inherits: 'groupA', rules: [{ action: 'deny', access: 'read', path: '/b' }] },
+          groupA: {
+            inherits: 'groupB',
+            filesystem: { denyRead: ['/a'] },
+          },
+          groupB: {
+            inherits: 'groupA',
+            filesystem: { denyRead: ['/b'] },
+          },
         },
         defaultGroup: 'groupA',
       });
@@ -153,10 +156,9 @@ describe('Permissions', () => {
       // 不应死循环，应正常返回。
       const perms = resolveUserPermissions(user.userId);
       expect(perms.isAdmin).toBe(false);
-      expect(perms.rules.length).toBeGreaterThanOrEqual(0);
     });
 
-    it('should fall back to empty rules for unknown group', () => {
+    it('should fall back to empty filesystem for unknown group', () => {
       const user = createUser('unknown-group');
       const profile = readProfile(user.userId)!;
       profile.permissionGroup = 'nonexistent';
@@ -164,36 +166,20 @@ describe('Permissions', () => {
 
       const perms = resolveUserPermissions(user.userId);
       expect(perms.isAdmin).toBe(false);
-      // 未知组无用户规则，但仍有自动追加的安全 deny 规则。
-      expect(perms.rules.length).toBeGreaterThanOrEqual(1);
-      // 安全规则应包含 ~/.claude deny。
-      expect(perms.rules.some((r) => r.action === 'deny' && r.path.includes('.claude'))).toBe(true);
+      expect(perms.filesystem.allowWrite).toEqual([]);
+      expect(perms.filesystem.denyWrite).toEqual([]);
+      expect(perms.filesystem.denyRead).toEqual([]);
     });
 
-    it('should append work group rules at the end', () => {
-      reconfigurePermissions({
-        groups: {
-          admin: {},
-          user: {
-            rules: [{ action: 'deny', access: 'write', path: '*' }],
-          },
-        },
-        workGroups: {
-          'team-alpha': {
-            members: { placeholder: 'rw' },
-          },
-        },
-        defaultGroup: 'user',
-      });
-
-      // 需要把实际 userId 放到 workGroup members 中。
+    it('should add work group rw workspace to allowWrite', () => {
       const user = createUser('wg-test');
-      // 重新配置，把真实 userId 注入 members。
       reconfigurePermissions({
         groups: {
           admin: {},
           user: {
-            rules: [{ action: 'deny', access: 'write', path: '*' }],
+            filesystem: {
+              allowWrite: ['${userWorkspace}'],
+            },
           },
         },
         workGroups: {
@@ -205,17 +191,21 @@ describe('Permissions', () => {
       });
 
       const perms = resolveUserPermissions(user.userId);
-      // 工作组规则在安全 deny 规则之前，查找包含 workgroups 路径的 allow 规则。
-      const wgRule = perms.rules.find((r) => r.path.includes('workgroups/team-alpha/workspace'));
-      expect(wgRule).toBeDefined();
-      expect(wgRule!.action).toBe('allow');
-      expect(wgRule!.access).toBe('readwrite');
+      const wgWorkspace = resolve(dataDir, 'workgroups', 'team-alpha', 'workspace');
+      expect(perms.filesystem.allowWrite).toContain(wgWorkspace);
     });
 
-    it('should add read-only rule for work group "r" members', () => {
+    it('should NOT add work group r workspace to allowWrite', () => {
       const user = createUser('wg-readonly');
       reconfigurePermissions({
-        groups: { admin: {}, user: { rules: [] } },
+        groups: {
+          admin: {},
+          user: {
+            filesystem: {
+              allowWrite: ['${userWorkspace}'],
+            },
+          },
+        },
         workGroups: {
           'team-beta': {
             members: { [user.userId]: 'r' },
@@ -225,11 +215,56 @@ describe('Permissions', () => {
       });
 
       const perms = resolveUserPermissions(user.userId);
-      // 工作组规则在安全 deny 规则之前，查找包含 workgroups 路径的 allow 规则。
-      const wgRule = perms.rules.find((r) => r.path.includes('workgroups/team-beta/workspace'));
-      expect(wgRule).toBeDefined();
-      expect(wgRule!.action).toBe('allow');
-      expect(wgRule!.access).toBe('read');
+      const wgWorkspace = resolve(dataDir, 'workgroups', 'team-beta', 'workspace');
+      expect(perms.filesystem.allowWrite).not.toContain(wgWorkspace);
+    });
+
+    it('should expand ${otherUserDir} to other users directories', () => {
+      // 创建多个用户。
+      const userA = createUser('user-a');
+      const userB = createUser('user-b');
+      const userC = createUser('user-c');
+
+      reconfigurePermissions({
+        groups: {
+          admin: {},
+          user: {
+            filesystem: {
+              denyRead: ['${otherUserDir}'],
+              denyWrite: ['${otherUserDir}'],
+            },
+          },
+        },
+        defaultGroup: 'user',
+      });
+
+      const permsA = resolveUserPermissions(userA.userId);
+      const userBDir = resolve(dataDir, 'users', userB.userId);
+      const userCDir = resolve(dataDir, 'users', userC.userId);
+      const userADir = resolve(dataDir, 'users', userA.userId);
+
+      // userA 的 denyRead 应包含 userB 和 userC 的目录，但不包含自己。
+      expect(permsA.filesystem.denyRead).toContain(userBDir);
+      expect(permsA.filesystem.denyRead).toContain(userCDir);
+      expect(permsA.filesystem.denyRead).not.toContain(userADir);
+
+      // denyWrite 同理。
+      expect(permsA.filesystem.denyWrite).toContain(userBDir);
+      expect(permsA.filesystem.denyWrite).toContain(userCDir);
+      expect(permsA.filesystem.denyWrite).not.toContain(userADir);
+    });
+
+    it('should resolve protectedPaths', () => {
+      reconfigurePermissions({
+        groups: { admin: {}, user: {} },
+        defaultGroup: 'user',
+        protectedPaths: ['${dataDir}/secrets'],
+      });
+
+      const user = createUser('pp-test');
+      const perms = resolveUserPermissions(user.userId);
+      const secretsDir = resolve(process.cwd(), dataDir, 'secrets');
+      expect(perms.protectedPaths).toContain(secretsDir);
     });
   });
 
@@ -237,66 +272,92 @@ describe('Permissions', () => {
 
   describe('isPathAllowed', () => {
     it('should always allow admin', () => {
-      const perms = { isAdmin: true, rules: [] };
+      const perms = {
+        isAdmin: true,
+        filesystem: { allowWrite: [], denyWrite: [], denyRead: [] },
+        protectedPaths: [],
+      };
       expect(isPathAllowed('/etc/passwd', perms, 'read')).toBe(true);
       expect(isPathAllowed('/etc/passwd', perms, 'write')).toBe(true);
     });
 
-    it('should allow by default (base state = allow) when no rules match', () => {
-      const perms = { isAdmin: false, rules: [] };
+    it('should allow all by default when no rules configured', () => {
+      const perms = {
+        isAdmin: false,
+        filesystem: { allowWrite: [], denyWrite: [], denyRead: [] },
+        protectedPaths: [],
+      };
       expect(isPathAllowed('/any/path', perms, 'read')).toBe(true);
       expect(isPathAllowed('/any/path', perms, 'write')).toBe(true);
     });
 
-    it('should deny when deny rule matches', () => {
+    it('should deny write when path not in allowWrite (whitelist mode)', () => {
       const perms = {
         isAdmin: false,
-        rules: [{ action: 'deny' as const, access: 'write' as const, path: '*' }],
+        filesystem: {
+          allowWrite: ['/home/user/workspace'],
+          denyWrite: [],
+          denyRead: [],
+        },
+        protectedPaths: [],
       };
-      expect(isPathAllowed('/any/path', perms, 'write')).toBe(false);
-      // read 不受 deny write 影响。
-      expect(isPathAllowed('/any/path', perms, 'read')).toBe(true);
+      // 在白名单内 → 可写。
+      expect(isPathAllowed('/home/user/workspace/file.js', perms, 'write')).toBe(true);
+      // 不在白名单内 → 不可写。
+      expect(isPathAllowed('/etc/hosts', perms, 'write')).toBe(false);
+      // 读取不受 allowWrite 影响。
+      expect(isPathAllowed('/etc/hosts', perms, 'read')).toBe(true);
     });
 
-    it('should use last matching rule (later rules override)', () => {
+    it('should deny write when path in denyWrite (overrides allowWrite)', () => {
       const perms = {
         isAdmin: false,
-        rules: [
-          { action: 'deny' as const, access: 'readwrite' as const, path: '/data' },
-          { action: 'allow' as const, access: 'readwrite' as const, path: '/data/mydir' },
-        ],
+        filesystem: {
+          allowWrite: ['/home/user'],
+          denyWrite: ['/home/user/secrets'],
+          denyRead: [],
+        },
+        protectedPaths: [],
       };
-      // /data 被 deny。
-      expect(isPathAllowed('/data/other', perms, 'read')).toBe(false);
-      // /data/mydir 被后面的 allow 覆盖。
-      expect(isPathAllowed('/data/mydir/file.txt', perms, 'read')).toBe(true);
-      expect(isPathAllowed('/data/mydir/file.txt', perms, 'write')).toBe(true);
+      // /home/user 下可写。
+      expect(isPathAllowed('/home/user/file.js', perms, 'write')).toBe(true);
+      // /home/user/secrets 下不可写（denyWrite 优先级高）。
+      expect(isPathAllowed('/home/user/secrets/key.pem', perms, 'write')).toBe(false);
     });
 
-    it('should match readwrite access to both read and write modes', () => {
+    it('should deny read when path in denyRead', () => {
       const perms = {
         isAdmin: false,
-        rules: [{ action: 'deny' as const, access: 'readwrite' as const, path: '/secret' }],
+        filesystem: {
+          allowWrite: [],
+          denyWrite: [],
+          denyRead: ['/data/other-user'],
+        },
+        protectedPaths: [],
       };
-      expect(isPathAllowed('/secret/file', perms, 'read')).toBe(false);
-      expect(isPathAllowed('/secret/file', perms, 'write')).toBe(false);
+      expect(isPathAllowed('/data/other-user/file.txt', perms, 'read')).toBe(false);
+      // 写入不受 denyRead 影响（除非有其他限制）。
+      expect(isPathAllowed('/data/other-user/file.txt', perms, 'write')).toBe(true);
     });
 
-    it('should not match read-only rule against write mode', () => {
+    it('should deny both read and write for protectedPaths', () => {
       const perms = {
         isAdmin: false,
-        rules: [{ action: 'deny' as const, access: 'read' as const, path: '/logs' }],
+        filesystem: {
+          allowWrite: ['/protected/dir'],  // 即使在 allowWrite 中。
+          denyWrite: [],
+          denyRead: [],
+        },
+        protectedPaths: ['/protected/dir'],
       };
-      // write 不受 deny read 影响。
-      expect(isPathAllowed('/logs/app.log', perms, 'write')).toBe(true);
-      expect(isPathAllowed('/logs/app.log', perms, 'read')).toBe(false);
+      expect(isPathAllowed('/protected/dir/file', perms, 'read')).toBe(false);
+      expect(isPathAllowed('/protected/dir/file', perms, 'write')).toBe(false);
     });
 
-    it('should simulate default user group scenario correctly', () => {
+    it('should handle real-world default user scenario', () => {
       const user = createUser('scenario-test');
       const workspace = resolve(dataDir, 'users', user.userId, 'workspace');
-      const userDir = join(dataDir, 'users', user.userId);
-      const absDataDir = resolve(process.cwd(), dataDir);
+      const userDir = resolve(process.cwd(), dataDir, 'users', user.userId);
 
       const perms = resolveUserPermissions(user.userId);
 
@@ -304,16 +365,14 @@ describe('Permissions', () => {
       expect(isPathAllowed(join(workspace, 'file.js'), perms, 'read')).toBe(true);
       expect(isPathAllowed(join(workspace, 'file.js'), perms, 'write')).toBe(true);
 
-      // 用户目录内非 workspace — 只读。
+      // 用户 memory 目录 — 可读可写。
+      expect(isPathAllowed(join(userDir, 'memory', 'core.json'), perms, 'write')).toBe(true);
+
+      // 用户目录内 profile.json — 可读（不在 denyRead），不可写（不在 allowWrite）。
       expect(isPathAllowed(join(userDir, 'profile.json'), perms, 'read')).toBe(true);
       expect(isPathAllowed(join(userDir, 'profile.json'), perms, 'write')).toBe(false);
 
-      // 其他用户目录 — 不可读不可写。
-      const otherUserDir = join(absDataDir, 'users', 'user_other');
-      expect(isPathAllowed(join(otherUserDir, 'file'), perms, 'read')).toBe(false);
-      expect(isPathAllowed(join(otherUserDir, 'file'), perms, 'write')).toBe(false);
-
-      // 系统其他路径 — 可读不可写。
+      // 系统路径 — 可读（不在 denyRead），不可写（不在 allowWrite）。
       expect(isPathAllowed('/usr/bin/node', perms, 'read')).toBe(true);
       expect(isPathAllowed('/usr/bin/node', perms, 'write')).toBe(false);
     });
@@ -388,10 +447,25 @@ describe('Permissions', () => {
     });
 
     it('should deny Read from other user directories', async () => {
-      const user = createUser('read-other');
-      const absDataDir = resolve(process.cwd(), dataDir);
-      const otherUserFile = join(absDataDir, 'users', 'user_other', 'profile.json');
-      const canUseTool = buildCanUseTool(user.userId);
+      const userA = createUser('read-other-a');
+      const userB = createUser('read-other-b');
+
+      // 重新配置以包含 otherUserDir。
+      reconfigurePermissions({
+        groups: {
+          admin: {},
+          user: {
+            filesystem: {
+              allowWrite: ['${userWorkspace}'],
+              denyRead: ['${otherUserDir}'],
+            },
+          },
+        },
+        defaultGroup: 'user',
+      });
+
+      const otherUserFile = resolve(dataDir, 'users', userB.userId, 'profile.json');
+      const canUseTool = buildCanUseTool(userA.userId);
       const result = await canUseTool('Read', { file_path: otherUserFile }, {
         signal: new AbortController().signal,
         toolUseID: 'test-7',
@@ -406,7 +480,7 @@ describe('Permissions', () => {
         signal: new AbortController().signal,
         toolUseID: 'test-8',
       });
-      // /etc 可读。
+      // /etc 可读（不在 denyRead）。
       expect(result.behavior).toBe('allow');
     });
 
@@ -418,6 +492,19 @@ describe('Permissions', () => {
         toolUseID: 'test-9',
       });
       expect(result.behavior).toBe('allow');
+    });
+
+    it('should deny Bash with dangerouslyDisableSandbox', async () => {
+      const user = createUser('bash-nosandbox');
+      const canUseTool = buildCanUseTool(user.userId);
+      const result = await canUseTool('Bash', {
+        command: 'echo hi',
+        dangerouslyDisableSandbox: true,
+      }, {
+        signal: new AbortController().signal,
+        toolUseID: 'test-10',
+      });
+      expect(result.behavior).toBe('deny');
     });
   });
 
@@ -441,22 +528,40 @@ describe('Permissions', () => {
       expect(settings.autoAllowBashIfSandboxed).toBe(true);
     });
 
-    it('should extract deny rules into sandbox filesystem config', () => {
-      const user = createUser('sandbox-rules');
-      const settings = buildSandboxSettings(user.userId);
-
-      // 默认 user 组有 deny write * 和 deny readwrite ${dataDir}。
-      expect(settings.filesystem?.denyRead).toBeDefined();
-      expect(settings.filesystem?.denyWrite).toBeDefined();
-    });
-
-    it('should extract allow write rules into sandbox allowWrite', () => {
+    it('should pass through allowWrite to sandbox', () => {
       const user = createUser('sandbox-allow');
       const settings = buildSandboxSettings(user.userId);
 
-      // 默认 user 组有 allow readwrite ${userWorkspace}。
+      // 默认 user 组有 allowWrite 条目。
       expect(settings.filesystem?.allowWrite).toBeDefined();
       expect(settings.filesystem!.allowWrite!.length).toBeGreaterThan(0);
+    });
+
+    it('should include protectedPaths in sandbox denyRead and denyWrite', () => {
+      reconfigurePermissions({
+        groups: { admin: {}, user: {} },
+        defaultGroup: 'user',
+        protectedPaths: ['${dataDir}/secrets'],
+      });
+
+      const user = createUser('sandbox-pp');
+      const settings = buildSandboxSettings(user.userId);
+      const secretsDir = resolve(process.cwd(), dataDir, 'secrets');
+
+      expect(settings.filesystem?.denyRead).toContain(secretsDir);
+      expect(settings.filesystem?.denyWrite).toContain(secretsDir);
+    });
+
+    it('should include otherUserDir in sandbox denyRead', () => {
+      const userA = createUser('sandbox-a');
+      const userB = createUser('sandbox-b');
+
+      // 使用默认配置（包含 ${otherUserDir}）。
+      const settings = buildSandboxSettings(userA.userId);
+      const userBDir = resolve(dataDir, 'users', userB.userId);
+
+      expect(settings.filesystem?.denyRead).toContain(userBDir);
+      expect(settings.filesystem?.denyWrite).toContain(userBDir);
     });
   });
 
@@ -466,6 +571,21 @@ describe('Permissions', () => {
     it('user A cannot read user B workspace', () => {
       const userA = createUser('user-a');
       const userB = createUser('user-b');
+
+      // 重新配置以触发 ${otherUserDir} 展开。
+      reconfigurePermissions({
+        groups: {
+          admin: {},
+          user: {
+            filesystem: {
+              allowWrite: ['${userDir}/memory', '${userWorkspace}'],
+              denyWrite: ['${otherUserDir}'],
+              denyRead: ['${otherUserDir}'],
+            },
+          },
+        },
+        defaultGroup: 'user',
+      });
 
       const permsA = resolveUserPermissions(userA.userId);
       const userBWorkspace = resolve(dataDir, 'users', userB.userId, 'workspace');
@@ -500,12 +620,11 @@ describe('Permissions', () => {
         groups: {
           admin: {},
           user: {
-            rules: [
-              { action: 'deny', access: 'write', path: '*' },
-              { action: 'deny', access: 'readwrite', path: '${dataDir}' },
-              { action: 'allow', access: 'read', path: '${userDir}' },
-              { action: 'allow', access: 'readwrite', path: '${userWorkspace}' },
-            ],
+            filesystem: {
+              allowWrite: ['${userWorkspace}'],
+              denyWrite: ['${otherUserDir}'],
+              denyRead: ['${otherUserDir}'],
+            },
           },
         },
         workGroups: {
@@ -527,12 +646,11 @@ describe('Permissions', () => {
         groups: {
           admin: {},
           user: {
-            rules: [
-              { action: 'deny', access: 'write', path: '*' },
-              { action: 'deny', access: 'readwrite', path: '${dataDir}' },
-              { action: 'allow', access: 'read', path: '${userDir}' },
-              { action: 'allow', access: 'readwrite', path: '${userWorkspace}' },
-            ],
+            filesystem: {
+              allowWrite: ['${userWorkspace}'],
+              denyWrite: ['${otherUserDir}'],
+              denyRead: ['${otherUserDir}'],
+            },
           },
         },
         workGroups: {
@@ -545,6 +663,7 @@ describe('Permissions', () => {
       const wgWorkspace = resolve(dataDir, 'workgroups', 'shared-team', 'workspace');
 
       expect(isPathAllowed(join(wgWorkspace, 'doc.md'), perms, 'read')).toBe(true);
+      // r 成员不可写（workspace 不在 allowWrite 中）。
       expect(isPathAllowed(join(wgWorkspace, 'doc.md'), perms, 'write')).toBe(false);
     });
 
@@ -554,18 +673,17 @@ describe('Permissions', () => {
         groups: {
           admin: {},
           user: {
-            rules: [
-              { action: 'deny', access: 'write', path: '*' },
-              { action: 'deny', access: 'readwrite', path: '${dataDir}' },
-              { action: 'allow', access: 'read', path: '${userDir}' },
-              { action: 'allow', access: 'readwrite', path: '${userWorkspace}' },
-            ],
+            filesystem: {
+              allowWrite: ['${userWorkspace}'],
+              denyWrite: ['${otherUserDir}'],
+              denyRead: ['${otherUserDir}'],
+            },
           },
           developer: {
             inherits: 'user',
-            rules: [
-              { action: 'allow', access: 'readwrite', path: '/opt/projects' },
-            ],
+            filesystem: {
+              allowWrite: ['/opt/projects'],
+            },
           },
         },
         defaultGroup: 'developer',
@@ -573,17 +691,37 @@ describe('Permissions', () => {
 
       const perms = resolveUserPermissions(user.userId);
 
-      // 继承自 user：系统路径只读。
+      // 继承自 user：系统路径不可写。
       expect(isPathAllowed('/usr/bin/node', perms, 'read')).toBe(true);
       expect(isPathAllowed('/usr/bin/node', perms, 'write')).toBe(false);
 
-      // developer 自己的规则：/opt/projects 可读可写。
+      // developer 额外的 allowWrite：/opt/projects 可写。
       expect(isPathAllowed('/opt/projects/repo/file.ts', perms, 'read')).toBe(true);
       expect(isPathAllowed('/opt/projects/repo/file.ts', perms, 'write')).toBe(true);
+    });
 
-      // 其他用户数据目录仍不可访问。
-      const absDataDir = resolve(process.cwd(), dataDir);
-      expect(isPathAllowed(join(absDataDir, 'users', 'user_other', 'file'), perms, 'read')).toBe(false);
+    it('user cannot read dataDir config when denyRead covers it', () => {
+      reconfigurePermissions({
+        groups: {
+          admin: {},
+          user: {
+            filesystem: {
+              allowWrite: ['${userWorkspace}'],
+              denyRead: ['${dataDir}/secrets'],
+            },
+          },
+        },
+        defaultGroup: 'user',
+      });
+
+      const user = createUser('deny-read-test');
+      const perms = resolveUserPermissions(user.userId);
+      const secretFile = resolve(process.cwd(), dataDir, 'secrets', 'key.pem');
+
+      expect(isPathAllowed(secretFile, perms, 'read')).toBe(false);
+      // 但其他 dataDir 下的文件仍可读。
+      const otherFile = resolve(process.cwd(), dataDir, 'config.yaml');
+      expect(isPathAllowed(otherFile, perms, 'read')).toBe(true);
     });
   });
 });
