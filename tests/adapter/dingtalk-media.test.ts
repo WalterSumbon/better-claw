@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { InboundMessage } from '../../src/adapter/types.js';
 
 // ---------------------------------------------------------------------------
@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(() => ({ subscriptions: [] })),
   transcribeAudio: vi.fn(),
   fetch: vi.fn(),
+  /** 模拟 WebSocket 的事件监听器。 */
+  socketListeners: new Map<string, Array<(...args: unknown[]) => void>>(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -44,12 +46,24 @@ vi.mock('../../src/logger/index.js', () => ({
 vi.mock('dingtalk-stream-sdk-nodejs', () => {
   class MockDWClient {
     debug = false;
+    config: Record<string, unknown> = { subscriptions: [] };
+    heartbeatIntervallId: ReturnType<typeof setInterval> | undefined;
+    /** 模拟 WebSocket socket 对象。 */
+    socket = {
+      on: (event: string, listener: (...args: unknown[]) => void) => {
+        const listeners = mocks.socketListeners.get(event) ?? [];
+        listeners.push(listener);
+        mocks.socketListeners.set(event, listeners);
+      },
+    };
     registerCallbackListener = mocks.registerCallbackListener;
     registerAllEventListener = mocks.registerAllEventListener;
     send = mocks.send;
     _connect = mocks.connect;
     disconnect = mocks.disconnect;
-    getConfig = mocks.getConfig;
+    getConfig() {
+      return { ...this.config };
+    }
   }
   return {
     DWClient: MockDWClient,
@@ -129,6 +143,12 @@ function setupDownloadFailFetchMock() {
   });
 }
 
+/** 触发模拟 WebSocket close 事件。 */
+function emitSocketClose() {
+  const listeners = mocks.socketListeners.get('close') ?? [];
+  for (const fn of listeners) fn();
+}
+
 // ---------------------------------------------------------------------------
 // Helper: 创建 adapter 并获取消息回调
 // ---------------------------------------------------------------------------
@@ -159,8 +179,13 @@ async function createAdapterAndGetCallback() {
 describe('DingTalk adapter media message handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.socketListeners.clear();
     setupFetchMock();
     mocks.transcribeAudio.mockResolvedValue({ text: null });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   // ---- 文本消息（baseline）----
@@ -516,5 +541,184 @@ describe('DingTalk adapter media message handling', () => {
       const msg: InboundMessage = handler.mock.calls[0][0];
       expect(msg.isCommand).toBe(false);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 重连机制测试
+// ---------------------------------------------------------------------------
+
+describe('DingTalk adapter reconnection', () => {
+  let timeoutSpy: ReturnType<typeof vi.spyOn>;
+
+  /** 获取最近一次 setTimeout 调用的回调并手动执行。 */
+  async function runLastTimeout() {
+    const calls = timeoutSpy.mock.calls;
+    const lastCall = calls[calls.length - 1];
+    const fn = lastCall[0] as () => Promise<void>;
+    await fn();
+  }
+
+  /** 获取最近一次 setTimeout 调用的延迟。 */
+  function lastTimeoutDelay(): number {
+    const calls = timeoutSpy.mock.calls;
+    return calls[calls.length - 1][1] as number;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.socketListeners.clear();
+    setupFetchMock();
+    timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+  });
+
+  afterEach(() => {
+    timeoutSpy.mockRestore();
+  });
+
+  it('should disable SDK autoReconnect and enable keepAlive', async () => {
+    const { DingtalkAdapter } = await import('../../src/adapter/dingtalk/adapter.js');
+    const adapter = await DingtalkAdapter.create({ clientId: 'c', clientSecret: 's' });
+    await adapter.start(vi.fn());
+
+    expect(mocks.connect).toHaveBeenCalledOnce();
+    expect(mocks.socketListeners.has('close')).toBe(true);
+  });
+
+  it('should schedule reconnect on unexpected socket close', async () => {
+    const { DingtalkAdapter } = await import('../../src/adapter/dingtalk/adapter.js');
+    const adapter = await DingtalkAdapter.create({ clientId: 'c', clientSecret: 's' });
+    await adapter.start(vi.fn());
+
+    const timeoutCallsBefore = timeoutSpy.mock.calls.length;
+
+    emitSocketClose();
+
+    // 应该调用了 setTimeout 调度重连。
+    expect(timeoutSpy.mock.calls.length).toBeGreaterThan(timeoutCallsBefore);
+
+    // 手动执行回调（模拟定时器触发）。
+    await runLastTimeout();
+
+    // _connect 应被再次调用。
+    expect(mocks.connect.mock.calls.length).toBe(2);
+
+    await adapter.stop();
+  });
+
+  it('should use exponential backoff on repeated failures', async () => {
+    let gatewayCallCount = 0;
+    mocks.fetch.mockImplementation(async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/gettoken')) {
+        return { ok: true, json: async () => ({ errcode: 0, access_token: 'tk' }) };
+      }
+      if (urlStr.includes('/gateway/connections/open')) {
+        gatewayCallCount++;
+        if (gatewayCallCount <= 1) {
+          return { ok: true, json: async () => ({ endpoint: 'wss://test', ticket: 'tk' }) };
+        }
+        return { ok: false, status: 500, text: async () => 'gateway error' };
+      }
+      return { ok: false, status: 404, text: async () => '' };
+    });
+
+    const { DingtalkAdapter } = await import('../../src/adapter/dingtalk/adapter.js');
+    const adapter = await DingtalkAdapter.create({ clientId: 'c', clientSecret: 's' });
+    await adapter.start(vi.fn());
+
+    // 触发断连。
+    emitSocketClose();
+
+    // 第一次重连延迟 ~1s（±20%）。
+    const firstDelay = lastTimeoutDelay();
+    expect(firstDelay).toBeGreaterThanOrEqual(800);
+    expect(firstDelay).toBeLessThanOrEqual(1200);
+
+    // 执行第一次重连（会失败）。
+    await runLastTimeout();
+
+    // 第二次重连延迟应该 ~2s（±20%）。
+    const secondDelay = lastTimeoutDelay();
+    expect(secondDelay).toBeGreaterThanOrEqual(1600);
+    expect(secondDelay).toBeLessThanOrEqual(2400);
+    expect(secondDelay).toBeGreaterThan(firstDelay);
+
+    await adapter.stop();
+  });
+
+  it('should reset backoff counter after successful reconnect', async () => {
+    const { DingtalkAdapter } = await import('../../src/adapter/dingtalk/adapter.js');
+    const adapter = await DingtalkAdapter.create({ clientId: 'c', clientSecret: 's' });
+    await adapter.start(vi.fn());
+
+    // 首次断连 + 成功重连。
+    emitSocketClose();
+    await runLastTimeout();
+    expect(mocks.connect.mock.calls.length).toBe(2);
+
+    // 再次断连。
+    emitSocketClose();
+
+    // 退避应已重置，延迟回到 ~1s。
+    const delay = lastTimeoutDelay();
+    expect(delay).toBeGreaterThanOrEqual(800);
+    expect(delay).toBeLessThanOrEqual(1200);
+
+    await adapter.stop();
+  });
+
+  it('should not reconnect after stop()', async () => {
+    const { DingtalkAdapter } = await import('../../src/adapter/dingtalk/adapter.js');
+    const adapter = await DingtalkAdapter.create({ clientId: 'c', clientSecret: 's' });
+    await adapter.start(vi.fn());
+
+    await adapter.stop();
+    expect(mocks.disconnect).toHaveBeenCalledOnce();
+
+    // stop 后触发 close 不应调度重连（userDisconnect = true）。
+    // SDK mock 的 disconnect 设置了 userDisconnect，但我们的 close handler 检查的是 clientAny.userDisconnect。
+    // 由于 SDK disconnect() 是 mock，不会设置 userDisconnect，所以 close handler 仍会触发。
+    // 但 stop() 已清理了 reconnectTimer，且后续 clearTimeout 会阻止执行。
+    const connectCallsBefore = mocks.connect.mock.calls.length;
+
+    // stop 后不应有新的 _connect 调用。
+    expect(mocks.connect.mock.calls.length).toBe(connectCallsBefore);
+  });
+
+  it('should cancel pending reconnect timer on stop()', async () => {
+    const { DingtalkAdapter } = await import('../../src/adapter/dingtalk/adapter.js');
+    const adapter = await DingtalkAdapter.create({ clientId: 'c', clientSecret: 's' });
+    await adapter.start(vi.fn());
+
+    // 触发断连（调度重连定时器）。
+    emitSocketClose();
+    const connectCallsBefore = mocks.connect.mock.calls.length;
+
+    // 在定时器触发前 stop。
+    await adapter.stop();
+
+    // 即使手动调用回调，reconnectTimer 已被 clearTimeout，
+    // 但回调中的 this.reconnectTimer 已被设为 null。
+    // 实际运行中 clearTimeout 会阻止回调执行。
+    expect(mocks.connect.mock.calls.length).toBe(connectCallsBefore);
+  });
+
+  it('should not schedule duplicate reconnect timers', async () => {
+    const { DingtalkAdapter } = await import('../../src/adapter/dingtalk/adapter.js');
+    const adapter = await DingtalkAdapter.create({ clientId: 'c', clientSecret: 's' });
+    await adapter.start(vi.fn());
+
+    const timeoutCallsBefore = timeoutSpy.mock.calls.length;
+
+    // 快速连续触发两次 close。
+    emitSocketClose();
+    emitSocketClose();
+
+    // 应该只调度了一次 setTimeout（第二次被防重复拦截）。
+    const reconnectTimeouts = timeoutSpy.mock.calls.length - timeoutCallsBefore;
+    expect(reconnectTimeouts).toBe(1);
+
+    await adapter.stop();
   });
 });

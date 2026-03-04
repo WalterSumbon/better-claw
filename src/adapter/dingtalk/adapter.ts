@@ -136,6 +136,19 @@ export class DingtalkAdapter implements MessageAdapter {
   /** senderStaffId -> sessionWebhook 缓存，用于快速回复。 */
   private webhookCache = new Map<string, WebhookCacheEntry>();
 
+  // ---------------------------------------------------------------------------
+  // 重连状态
+  // ---------------------------------------------------------------------------
+
+  /** 连续重连失败次数（用于指数退避计算）。 */
+  private reconnectAttempt = 0;
+  /** 待执行的重连定时器（stop 时需清理）。 */
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 基础重连延迟（毫秒）。 */
+  private static readonly BASE_RECONNECT_DELAY_MS = 1_000;
+  /** 最大重连延迟（毫秒）。 */
+  private static readonly MAX_RECONNECT_DELAY_MS = 60_000;
+
   private constructor(client: DWClient, options: DingtalkAdapterOptions) {
     this.client = client;
     this.clientId = options.clientId;
@@ -640,22 +653,120 @@ export class DingtalkAdapter implements MessageAdapter {
       return { status: EventAck.SUCCESS };
     });
 
-    // 统一使用自定义连接逻辑：通过 fetch 获取 token 和 WebSocket endpoint，
-    // 绕过 SDK 内置的 axios 请求（在代理环境下 axios 可能发送 plain HTTP 到 HTTPS 端口）。
-    const wsUrl = await this.getStreamEndpoint();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 访问 SDK 私有属性以注入自定义 WebSocket URL。
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 访问 SDK 私有属性以配置连接行为。
     const clientAny = this.client as any;
-    clientAny['dw_url'] = wsUrl;
-    clientAny['config'] = {
+
+    // 禁用 SDK 内置的 autoReconnect：它的 connect() 调用 getEndpoint() 走 axios，
+    // 在代理环境下会失败。我们自己管理重连。
+    clientAny.config.autoReconnect = false;
+
+    // 开启心跳检测：SDK 每 8 秒发 ping，无 pong 则 terminate socket 触发 close。
+    // 可检测"半死"连接（TCP 还在但实际已不通）。
+    clientAny.config.keepAlive = true;
+
+    // 首次连接。
+    await this.connectStream();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Stream 连接管理（自定义重连 + 心跳）
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 建立 Stream WebSocket 连接。
+   *
+   * 使用自定义的 getStreamEndpoint()（基于 fetch）替代 SDK 内置的
+   * getEndpoint()（基于 axios），以支持自定义 apiBase 和代理环境。
+   * 连接成功后挂载 close 事件监听，断连时自动触发重连。
+   */
+  private async connectStream(): Promise<void> {
+    const log = getLogger();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientAny = this.client as any;
+
+    // 清理旧的心跳定时器，防止重连后出现多个并行定时器。
+    if (clientAny.heartbeatIntervallId !== undefined) {
+      clearInterval(clientAny.heartbeatIntervallId);
+      clientAny.heartbeatIntervallId = undefined;
+    }
+
+    const wsUrl = await this.getStreamEndpoint();
+    clientAny.dw_url = wsUrl;
+    clientAny.config = {
       ...(this.client.getConfig()),
       access_token: this.accessToken,
+      autoReconnect: false,
+      keepAlive: true,
     };
     await this.client._connect();
+
+    // 挂载 close 事件：SDK 的 autoReconnect 已禁用，由我们接管重连逻辑。
+    clientAny.socket?.on('close', () => {
+      if (!clientAny.userDisconnect) {
+        log.warn('DingTalk Stream WebSocket closed unexpectedly');
+        this.scheduleReconnect();
+      }
+    });
+
     log.info({ apiBase: this.apiBase, oapiBase: this.oapiBase }, 'DingTalk Stream client connected');
   }
 
-  /** 停止钉钉适配器。 */
+  /**
+   * 计算重连延迟（指数退避 + 随机抖动）。
+   *
+   * 延迟序列（近似）：1s → 2s → 4s → 8s → 16s → 32s → 60s（封顶）。
+   * 抖动范围 ±20%，避免多实例同时重连造成雷群效应。
+   */
+  private getReconnectDelay(): number {
+    const base = DingtalkAdapter.BASE_RECONNECT_DELAY_MS * 2 ** this.reconnectAttempt;
+    const capped = Math.min(base, DingtalkAdapter.MAX_RECONNECT_DELAY_MS);
+    const jitter = capped * 0.2 * (Math.random() * 2 - 1);
+    return Math.round(capped + jitter);
+  }
+
+  /**
+   * 调度一次重连尝试。
+   *
+   * 如果已有待执行的重连定时器则跳过（防止重复调度）。
+   * 连接成功后重置退避计数器；失败则递增后再次调度。
+   */
+  private scheduleReconnect(): void {
+    const log = getLogger();
+    if (this.reconnectTimer) return;
+
+    const delay = this.getReconnectDelay();
+
+    log.warn(
+      { attempt: this.reconnectAttempt, delayMs: delay },
+      'DingTalk Stream scheduling reconnect',
+    );
+
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      try {
+        await this.connectStream();
+        log.info(
+          { attempt: this.reconnectAttempt },
+          'DingTalk Stream reconnected successfully',
+        );
+        this.reconnectAttempt = 0;
+      } catch (err) {
+        this.reconnectAttempt++;
+        log.error(
+          { err, attempt: this.reconnectAttempt },
+          'DingTalk Stream reconnect failed',
+        );
+        this.scheduleReconnect();
+      }
+    }, delay);
+  }
+
+  /** 停止钉钉适配器，清理重连定时器。 */
   async stop(): Promise<void> {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.client.disconnect();
   }
 
