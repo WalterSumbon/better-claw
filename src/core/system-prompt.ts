@@ -33,7 +33,9 @@ You are running as a Claude Agent SDK subprocess. Your outputs are processed bef
 - **Thinking blocks**: Your internal reasoning (extended thinking) is NOT visible to the user.
 - **Files**: Use the mcp__better-claw__send_file tool to send files (images, documents, audio, etc.) as native media messages to the user.
 
-Because tool calls are invisible to the user, always include a brief text message before doing complex tool work, so the user knows you are processing their request.`);
+Because tool calls are invisible to the user:
+- Always include a brief text message before doing complex tool work, so the user knows you are processing their request.
+- If a tool returns content the user needs to see (e.g., memory reads, file contents, search results), you MUST reproduce the relevant content in your text response. The user cannot see tool outputs — if you don't paste it, they don't see it.`);
 
 
   // 2. 当前时间。

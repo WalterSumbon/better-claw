@@ -17,6 +17,38 @@ import type { CronTask } from './cron/types.js';
 import { initSkillIndex } from './skills/scanner.js';
 import { handleAdminCommand } from './core/admin-commands.js';
 
+/** 命令元信息。 */
+interface CommandDef {
+  name: string;
+  args?: string;
+  description: string;
+}
+
+/** 所有已注册的用户命令。 */
+const commands: CommandDef[] = [
+  { name: 'bind', args: '<token>', description: 'Link your platform account' },
+  { name: 'stop', description: 'Interrupt current response' },
+  { name: 'new', description: 'Start a new session' },
+  { name: 'restart', description: 'Restart the service' },
+  { name: 'admin', args: '<...>', description: 'Admin commands (admin only)' },
+  { name: 'help', description: 'Show available commands' },
+];
+
+/**
+ * 根据命令注册表生成帮助文本。
+ *
+ * @param prefix - 命令前缀（如 `/` 或 `.`）。
+ */
+function buildHelpText(prefix: string): string {
+  const entries = commands.map((cmd) => {
+    const usage = cmd.args ? `${cmd.name} ${cmd.args}` : cmd.name;
+    return { usage: `${prefix}${usage}`, desc: cmd.description };
+  });
+  const maxLen = Math.max(...entries.map((e) => e.usage.length));
+  const lines = entries.map((e) => `  ${e.usage.padEnd(maxLen)}  — ${e.desc}`);
+  return ['Available commands:', ...lines].join('\n');
+}
+
 /**
  * 从 process.argv 解析 --data-dir 参数。
  *
@@ -166,17 +198,7 @@ async function handleMessage(
         return;
       }
       case 'help': {
-        const p = adapter.commandPrefix;
-        const lines = [
-          `Available commands:`,
-          `  ${p}bind <token>  — Link your platform account`,
-          `  ${p}stop          — Interrupt current response`,
-          `  ${p}new           — Start a new session`,
-          `  ${p}restart       — Restart the service`,
-          `  ${p}admin <...>   — Admin commands (admin only)`,
-          `  ${p}help          — Show this help`,
-        ];
-        await adapter.sendText(msg.platformUserId, lines.join('\n'));
+        await adapter.sendText(msg.platformUserId, buildHelpText(adapter.commandPrefix));
         return;
       }
       default:
