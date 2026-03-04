@@ -165,6 +165,20 @@ async function handleMessage(
         }
         return;
       }
+      case 'help': {
+        const p = adapter.commandPrefix;
+        const lines = [
+          `Available commands:`,
+          `  ${p}bind <token>  — Link your platform account`,
+          `  ${p}stop          — Interrupt current response`,
+          `  ${p}new           — Start a new session`,
+          `  ${p}restart       — Restart the service`,
+          `  ${p}admin <...>   — Admin commands (admin only)`,
+          `  ${p}help          — Show this help`,
+        ];
+        await adapter.sendText(msg.platformUserId, lines.join('\n'));
+        return;
+      }
       default:
         // 未知命令作为普通消息处理。
         break;
