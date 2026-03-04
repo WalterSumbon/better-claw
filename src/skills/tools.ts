@@ -1,6 +1,24 @@
 import { z } from 'zod';
+import { resolve } from 'path';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { getSkillIndex, readNodeContent, formatSkillsetResponse } from './scanner.js';
+import { agentContext } from '../core/agent-context.js';
+import { getUserDir } from '../user/store.js';
+import { getSkillIndex, getUserSkillIndex, readNodeContent, formatSkillsetResponse } from './scanner.js';
+
+/**
+ * 获取当前 agent 上下文对应的 skill 索引。
+ *
+ * 如果在 agentContext 内调用，返回该用户的合并索引（全局 + per-user）。
+ * 否则返回全局索引。
+ */
+function getContextSkillIndex() {
+  const store = agentContext.getStore();
+  if (store?.userId) {
+    const userDir = resolve(process.cwd(), getUserDir(store.userId));
+    return getUserSkillIndex(store.userId, userDir);
+  }
+  return getSkillIndex();
+}
 
 /**
  * MCP 工具：load_skillset。
@@ -35,7 +53,7 @@ Call with path="" or path="." to list all top-level entries.`,
       ),
   },
   async (args) => {
-    const index = getSkillIndex();
+    const index = getContextSkillIndex();
     const requestedPath = args.path.trim();
 
     // 特殊情况：空路径或 "." 返回顶层列表。

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -7,12 +7,38 @@ import {
   buildSkillIndex,
   initSkillIndex,
   getSkillIndex,
+  getUserSkillIndex,
+  invalidateUserSkillCache,
+  getRawSkillPaths,
+  reloadSkillIndex,
   resetSkillIndex,
   formatTopLevelListing,
   formatSkillsetResponse,
   readNodeContent,
 } from '../../src/skills/scanner.js';
 import { createLogger, destroyLogger } from '../../src/logger/index.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** 在指定目录下创建一个 skill（SKILL.md）。 */
+function createSkill(dir: string, name: string, description: string): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'SKILL.md'),
+    `---\nname: ${name}\ndescription: ${description}\n---\n# ${name}\n`,
+  );
+}
+
+/** 在指定目录下创建一个 skillset（SKILLSET.md）。 */
+function createSkillset(dir: string, name: string, description: string): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'SKILLSET.md'),
+    `---\nname: ${name}\ndescription: ${description}\n---\n# ${name}\n`,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Test setup
@@ -282,6 +308,246 @@ description: A skill for doing this: and that
       resetSkillIndex();
       expect(() => getSkillIndex()).toThrow();
     });
+
+    it('should store raw config paths via getRawSkillPaths', () => {
+      const paths = ['~/.claude/skills', './skills', '${userDir}/skills'];
+      initSkillIndex(paths);
+      expect(getRawSkillPaths()).toEqual(paths);
+    });
+
+    it('should exclude ${userDir} paths from global index', () => {
+      // 全局路径有 fixture skills，用户路径用 ${userDir} 占位符
+      const globalRoot = join(tmpDir, 'global');
+      createSkill(join(globalRoot, 'global-skill'), 'global-skill', 'from global');
+
+      initSkillIndex([globalRoot, '${userDir}/skills']);
+
+      const globalIndex = getSkillIndex();
+      expect(globalIndex.nodes.has('global-skill')).toBe(true);
+      // 全局索引不应包含 ${userDir} 路径下的任何内容
+      expect(globalIndex.nodes.size).toBe(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getUserSkillIndex — per-user skill index
+  // -------------------------------------------------------------------------
+
+  describe('getUserSkillIndex', () => {
+    it('should return global index when no ${userDir} paths configured', () => {
+      const globalRoot = join(tmpDir, 'global');
+      createSkill(join(globalRoot, 'global-skill'), 'global-skill', 'from global');
+
+      // 仅全局路径，无 ${userDir}
+      initSkillIndex([globalRoot]);
+
+      const userDir = join(tmpDir, 'users', 'user-a');
+      const index = getUserSkillIndex('user-a', userDir);
+
+      // 应与全局索引是同一个引用
+      expect(index).toBe(getSkillIndex());
+      expect(index.nodes.has('global-skill')).toBe(true);
+    });
+
+    it('should merge global and user-specific skills', () => {
+      const globalRoot = join(tmpDir, 'global');
+      createSkill(join(globalRoot, 'global-skill'), 'global-skill', 'from global');
+
+      const userDir = join(tmpDir, 'users', 'user-a');
+      const userSkillsDir = join(userDir, 'skills');
+      createSkill(join(userSkillsDir, 'user-skill'), 'user-skill', 'from user-a');
+
+      initSkillIndex([globalRoot, '${userDir}/skills']);
+
+      const index = getUserSkillIndex('user-a', userDir);
+      expect(index.nodes.has('global-skill')).toBe(true);
+      expect(index.nodes.has('user-skill')).toBe(true);
+      expect(index.topLevel).toContain('global-skill');
+      expect(index.topLevel).toContain('user-skill');
+    });
+
+    it('should give global skills priority over user skills on name conflict', () => {
+      const globalRoot = join(tmpDir, 'global');
+      createSkill(join(globalRoot, 'conflict'), 'conflict', 'from global');
+
+      const userDir = join(tmpDir, 'users', 'user-a');
+      createSkill(join(userDir, 'skills', 'conflict'), 'conflict', 'from user');
+
+      initSkillIndex([globalRoot, '${userDir}/skills']);
+
+      const index = getUserSkillIndex('user-a', userDir);
+      expect(index.nodes.get('conflict')?.frontmatter.description).toBe('from global');
+      // 冲突时只保留一个
+      expect(index.topLevel.filter((p) => p === 'conflict').length).toBe(1);
+    });
+
+    it('should isolate skills between different users', () => {
+      const globalRoot = join(tmpDir, 'global');
+      createSkill(join(globalRoot, 'shared'), 'shared', 'global');
+
+      const userDirA = join(tmpDir, 'users', 'user-a');
+      createSkill(join(userDirA, 'skills', 'skill-a'), 'skill-a', 'only for user-a');
+
+      const userDirB = join(tmpDir, 'users', 'user-b');
+      createSkill(join(userDirB, 'skills', 'skill-b'), 'skill-b', 'only for user-b');
+
+      initSkillIndex([globalRoot, '${userDir}/skills']);
+
+      const indexA = getUserSkillIndex('user-a', userDirA);
+      const indexB = getUserSkillIndex('user-b', userDirB);
+
+      // user-a 看得到 shared + skill-a，看不到 skill-b
+      expect(indexA.nodes.has('shared')).toBe(true);
+      expect(indexA.nodes.has('skill-a')).toBe(true);
+      expect(indexA.nodes.has('skill-b')).toBe(false);
+
+      // user-b 看得到 shared + skill-b，看不到 skill-a
+      expect(indexB.nodes.has('shared')).toBe(true);
+      expect(indexB.nodes.has('skill-b')).toBe(true);
+      expect(indexB.nodes.has('skill-a')).toBe(false);
+    });
+
+    it('should cache per-user index', () => {
+      const globalRoot = join(tmpDir, 'global');
+      createSkill(join(globalRoot, 'g'), 'g', 'global');
+
+      const userDir = join(tmpDir, 'users', 'user-a');
+      createSkill(join(userDir, 'skills', 'u'), 'u', 'user');
+
+      initSkillIndex([globalRoot, '${userDir}/skills']);
+
+      const first = getUserSkillIndex('user-a', userDir);
+      const second = getUserSkillIndex('user-a', userDir);
+
+      // 缓存应返回同一引用
+      expect(first).toBe(second);
+    });
+
+    it('should return global index when user has no skills directory', () => {
+      const globalRoot = join(tmpDir, 'global');
+      createSkill(join(globalRoot, 'g'), 'g', 'global');
+
+      initSkillIndex([globalRoot, '${userDir}/skills']);
+
+      // 用户目录不存在
+      const userDir = join(tmpDir, 'users', 'nonexistent');
+      const index = getUserSkillIndex('nonexistent', userDir);
+
+      // 应返回全局索引（无用户专属 skill）
+      expect(index).toBe(getSkillIndex());
+    });
+
+    it('should handle user skillset with children', () => {
+      const globalRoot = join(tmpDir, 'global');
+      mkdirSync(globalRoot, { recursive: true }); // 空的全局目录
+
+      const userDir = join(tmpDir, 'users', 'user-a');
+      const userSkills = join(userDir, 'skills');
+      const ssDir = join(userSkills, 'my-set');
+      createSkillset(ssDir, 'my-set', 'user skillset');
+      createSkill(join(ssDir, 'child-a'), 'child-a', 'first child');
+      createSkill(join(ssDir, 'child-b'), 'child-b', 'second child');
+
+      initSkillIndex([globalRoot, '${userDir}/skills']);
+
+      const index = getUserSkillIndex('user-a', userDir);
+      expect(index.nodes.get('my-set')?.type).toBe('skillset');
+      expect(index.nodes.get('my-set')?.children).toEqual(
+        expect.arrayContaining(['my-set/child-a', 'my-set/child-b']),
+      );
+      expect(index.nodes.get('my-set/child-a')?.type).toBe('skill');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // invalidateUserSkillCache
+  // -------------------------------------------------------------------------
+
+  describe('invalidateUserSkillCache', () => {
+    it('should clear cache for specific user', () => {
+      const globalRoot = join(tmpDir, 'global');
+      createSkill(join(globalRoot, 'g'), 'g', 'global');
+
+      const userDir = join(tmpDir, 'users', 'user-a');
+      createSkill(join(userDir, 'skills', 'u'), 'u', 'user');
+
+      initSkillIndex([globalRoot, '${userDir}/skills']);
+
+      const first = getUserSkillIndex('user-a', userDir);
+      invalidateUserSkillCache('user-a');
+      const second = getUserSkillIndex('user-a', userDir);
+
+      // 缓存被清除后应重建，不再是同一引用
+      expect(first).not.toBe(second);
+      // 但内容应相同
+      expect(second.nodes.has('g')).toBe(true);
+      expect(second.nodes.has('u')).toBe(true);
+    });
+
+    it('should not affect other users cache', () => {
+      const globalRoot = join(tmpDir, 'global');
+      createSkill(join(globalRoot, 'g'), 'g', 'global');
+
+      const userDirA = join(tmpDir, 'users', 'user-a');
+      createSkill(join(userDirA, 'skills', 'a'), 'a', 'user-a');
+
+      const userDirB = join(tmpDir, 'users', 'user-b');
+      createSkill(join(userDirB, 'skills', 'b'), 'b', 'user-b');
+
+      initSkillIndex([globalRoot, '${userDir}/skills']);
+
+      const indexA = getUserSkillIndex('user-a', userDirA);
+      const indexB = getUserSkillIndex('user-b', userDirB);
+
+      invalidateUserSkillCache('user-a');
+
+      // user-b 的缓存不受影响
+      expect(getUserSkillIndex('user-b', userDirB)).toBe(indexB);
+      // user-a 被重建
+      expect(getUserSkillIndex('user-a', userDirA)).not.toBe(indexA);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // reloadSkillIndex — 清除所有缓存
+  // -------------------------------------------------------------------------
+
+  describe('reloadSkillIndex', () => {
+    it('should rebuild global index and clear all user caches', () => {
+      const globalRoot = join(tmpDir, 'global');
+      createSkill(join(globalRoot, 'g'), 'g', 'global');
+
+      const userDir = join(tmpDir, 'users', 'user-a');
+      createSkill(join(userDir, 'skills', 'u'), 'u', 'user');
+
+      initSkillIndex([globalRoot, '${userDir}/skills']);
+
+      const cachedUser = getUserSkillIndex('user-a', userDir);
+      const cachedGlobal = getSkillIndex();
+
+      // 添加新的全局 skill
+      createSkill(join(globalRoot, 'new-g'), 'new-g', 'newly added');
+
+      reloadSkillIndex([globalRoot, '${userDir}/skills']);
+
+      // 全局索引应包含新 skill
+      expect(getSkillIndex().nodes.has('new-g')).toBe(true);
+      expect(getSkillIndex()).not.toBe(cachedGlobal);
+
+      // 用户缓存应已清除，重建后包含新 skill
+      const rebuiltUser = getUserSkillIndex('user-a', userDir);
+      expect(rebuiltUser).not.toBe(cachedUser);
+      expect(rebuiltUser.nodes.has('new-g')).toBe(true);
+      expect(rebuiltUser.nodes.has('u')).toBe(true);
+    });
+
+    it('should update raw paths', () => {
+      initSkillIndex(['./old-path']);
+      expect(getRawSkillPaths()).toEqual(['./old-path']);
+
+      reloadSkillIndex(['./new-path', '${userDir}/skills']);
+      expect(getRawSkillPaths()).toEqual(['./new-path', '${userDir}/skills']);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -289,7 +555,7 @@ description: A skill for doing this: and that
   // -------------------------------------------------------------------------
 
   describe('formatTopLevelListing', () => {
-    it('should return empty string for empty index', () => {
+    it('should return empty string for empty index without paths', () => {
       const index = buildSkillIndex([]);
       expect(formatTopLevelListing(index)).toBe('');
     });
@@ -305,6 +571,29 @@ description: A skill for doing this: and that
       expect(listing).toContain('standalone-skill');
       expect(listing).toContain('(skillset)');
       expect(listing).toContain('(skill)');
+    });
+
+    it('should include resolved paths when provided', () => {
+      const fixturesPath = join(__dirname, '..', 'fixtures', 'skills');
+      const index = buildSkillIndex([fixturesPath]);
+      const paths = ['/home/user/.claude/skills', '/app/skills', '/data/users/user-a/skills'];
+      const listing = formatTopLevelListing(index, paths);
+
+      expect(listing).toContain('Skill search paths');
+      for (const p of paths) {
+        expect(listing).toContain(p);
+      }
+      expect(listing).toContain('SKILL.md');
+    });
+
+    it('should show "no skills installed" when empty index but has paths', () => {
+      const index = buildSkillIndex([]);
+      const paths = ['/some/path'];
+      const listing = formatTopLevelListing(index, paths);
+
+      expect(listing).toContain('## Available Skill Sets');
+      expect(listing).toContain('/some/path');
+      expect(listing).toContain('No skills or skill sets are currently installed');
     });
   });
 

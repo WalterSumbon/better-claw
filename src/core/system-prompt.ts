@@ -1,10 +1,11 @@
+import { resolve } from 'path';
 import { getUser } from '../user/manager.js';
 import { readCoreMemory } from '../memory/manager.js';
 import { getSessionHistoryForPrompt } from './session-manager.js';
-import { resolveUserPermissions } from './permissions.js';
-import { readProfile } from '../user/store.js';
+import { resolveUserPermissions, resolvePathVariable } from './permissions.js';
+import { readProfile, getUserDir } from '../user/store.js';
 import { getConfig } from '../config/index.js';
-import { getSkillIndex, formatTopLevelListing } from '../skills/scanner.js';
+import { getUserSkillIndex, getRawSkillPaths, formatTopLevelListing } from '../skills/scanner.js';
 
 /**
  * 为指定用户构建完整的 system prompt。
@@ -163,8 +164,16 @@ Tips for efficient lookup:
 
   // 7. Skill Set 清单（仅展示顶层节点，agent 按需加载详情）。
   try {
-    const skillIndex = getSkillIndex();
-    const skillListing = formatTopLevelListing(skillIndex);
+    const userDir = resolve(process.cwd(), getUserDir(userId));
+    const skillIndex = getUserSkillIndex(userId, userDir);
+
+    // 将原始配置路径解析为该用户的实际路径，展示在 system prompt 中。
+    const resolvedPaths = getRawSkillPaths().map((p) => {
+      const resolved = resolvePathVariable(p, userId);
+      return resolved ?? p;
+    });
+
+    const skillListing = formatTopLevelListing(skillIndex, resolvedPaths);
     if (skillListing) {
       sections.push(skillListing);
     }

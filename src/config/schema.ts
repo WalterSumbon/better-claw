@@ -179,10 +179,12 @@ const PermissionsConfigSchema = z.object({
 const SkillsConfigSchema = z.object({
   /** Skill / Skillset 搜索路径列表。
    *  支持 ~ 展开为用户主目录。
+   *  支持 ${userDir} 变量，表示当前用户的数据目录（多用户模式下各用户独立）。
    *  从前到后扫描，同名节点以先发现的为准。 */
   paths: z.array(z.string()).default(() => [
     '~/.claude/skills',
     './skills',
+    '${userDir}/skills',
   ]),
 });
 
@@ -267,7 +269,7 @@ export const AppConfigSchema = z.object({
   dingtalk: DingtalkConfigSchema.optional(),
   /** Skill 系统配置。 */
   skills: SkillsConfigSchema.default(() => ({
-    paths: ['~/.claude/skills', './skills'],
+    paths: ['~/.claude/skills', './skills', '${userDir}/skills'],
   })),
 });
 

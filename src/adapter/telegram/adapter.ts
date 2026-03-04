@@ -715,7 +715,7 @@ export class TelegramAdapter implements MessageAdapter {
     const htmlText = markdownToTelegramHTML(text);
     const chunks = splitMessage(htmlText);
 
-    const log = getLogger('telegram');
+    const log = getLogger();
     for (const chunk of chunks) {
       try {
         await this.bot.api.sendMessage(chatId, chunk, { parse_mode: 'HTML' });

@@ -455,12 +455,15 @@ restart:
 #   ---
 #
 skills:
-  # Skill 搜索路径列表。支持 ~ 展开为用户主目录。
+  # Skill 搜索路径列表。
+  # 支持 ~ 展开为用户主目录。
+  # 支持 ${userDir} 变量，运行时替换为当前用户的数据目录（<dataDir>/users/<userId>/）。
   # 从前到后扫描，同名节点以先发现的为准（即前面的路径优先级更高）。
-  # 默认值：["~/.claude/skills", "./skills"]
+  # 默认值：["~/.claude/skills", "./skills", "${userDir}/skills"]
   paths:
     - "~/.claude/skills"    # Claude Code 默认 skill 路径（兼容原生/第三方 skill）
-    - "./skills"            # Better-Claw 项目内置 skill
+    - "./skills"            # Better-Claw 项目内置 skill（全局共享）
+    - "${userDir}/skills"   # 用户私有 skill（多用户模式下各用户独立安装和管理）
 
 # ----------------------------------------------------------------------------
 # 语音转文字配置（可选）

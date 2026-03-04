@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from 'path';
 import { parse as parseYaml, parseDocument } from 'yaml';
 import { AppConfigSchema, type AppConfig } from './schema.js';
 import { reloadClaudeSettings } from './claude-settings.js';
+import { reloadSkillIndex } from '../skills/scanner.js';
 
 /** 工作组配置类型。 */
 export interface WorkGroupConfig {
@@ -82,6 +83,7 @@ const HOT_RELOADABLE_KEYS = [
   'messagePush',
   'speechToText',
   'permissionMode',
+  'skills',
 ] as const;
 
 /** 不可热重载的配置字段列表（需要重启）。 */
@@ -135,6 +137,11 @@ export function reloadConfig(): ReloadConfigResult {
 
   // 同步刷新 Claude Code settings 缓存。
   reloadClaudeSettings();
+
+  // 如果 skills 配置变化，重建 skill 索引。
+  if (reloaded.includes('skills')) {
+    reloadSkillIndex(cachedConfig.skills.paths);
+  }
 
   return { reloaded, requireRestart };
 }

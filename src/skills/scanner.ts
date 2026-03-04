@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
-import { join, resolve, relative } from 'path';
+import { join, resolve } from 'path';
 import { homedir } from 'os';
 import { getLogger } from '../logger/index.js';
 
@@ -83,8 +83,17 @@ export function parseFrontmatter(content: string): SkillFrontmatter {
 // Scanner
 // ---------------------------------------------------------------------------
 
-/** 模块级缓存。 */
+/** 模块级全局缓存（仅包含不含 ${userDir} 的路径扫描结果）。 */
 let cachedIndex: SkillIndex | null = null;
+
+/** 原始配置路径（包含变量占位符）。 */
+let rawConfigPaths: string[] = [];
+
+/** Per-user 索引缓存：userId → SkillIndex。 */
+const userIndexCache = new Map<string, SkillIndex>();
+
+/** 路径是否包含用户变量占位符。 */
+const USER_VAR_RE = /\$\{userDir\}/;
 
 /**
  * 展开路径中的 ~ 为 homedir。
@@ -94,6 +103,21 @@ function expandHome(p: string): string {
     return join(homedir(), p.slice(1));
   }
   return p;
+}
+
+/**
+ * 解析路径中的用户变量。
+ *
+ * @param rawPath - 原始路径（可能包含 ${userDir}）。
+ * @param userDir - 用户数据目录的绝对路径。
+ * @returns 解析后的绝对路径。
+ */
+function resolveSkillPath(rawPath: string, userDir?: string): string {
+  let p = rawPath;
+  if (userDir) {
+    p = p.replace(/\$\{userDir\}/g, userDir);
+  }
+  return resolve(expandHome(p));
 }
 
 /**
@@ -206,7 +230,7 @@ function scanDir(
 /**
  * 扫描所有配置的 skill 路径，构建完整的 skill 索引。
  *
- * @param paths - 配置的 skill 路径列表（支持 ~ 展开）。
+ * @param paths - 已解析为绝对路径的 skill 路径列表。
  * @returns 构建好的 SkillIndex。
  */
 export function buildSkillIndex(paths: string[]): SkillIndex {
@@ -248,14 +272,19 @@ export function buildSkillIndex(paths: string[]): SkillIndex {
 /**
  * 初始化 skill 索引（启动时调用一次）。
  *
- * @param paths - 配置的 skill 路径列表。
+ * 保存原始路径（含变量占位符），并预构建全局索引（不含 ${userDir} 的路径）。
+ *
+ * @param paths - 配置的 skill 路径列表（可能包含 ${userDir} 等变量）。
  */
 export function initSkillIndex(paths: string[]): void {
-  cachedIndex = buildSkillIndex(paths);
+  rawConfigPaths = paths;
+  // 全局索引只扫描不含用户变量的路径。
+  const globalPaths = paths.filter((p) => !USER_VAR_RE.test(p));
+  cachedIndex = buildSkillIndex(globalPaths);
 }
 
 /**
- * 获取当前缓存的 skill 索引。
+ * 获取当前缓存的全局 skill 索引（不含 per-user 路径）。
  *
  * @throws 如果尚未初始化则抛出异常。
  */
@@ -267,12 +296,88 @@ export function getSkillIndex(): SkillIndex {
 }
 
 /**
+ * 获取指定用户的 skill 索引。
+ *
+ * 如果配置路径中包含 ${userDir}，则合并全局索引和用户专属路径的扫描结果。
+ * 结果会按 userId 缓存，直到 reloadSkillIndex 清除缓存。
+ *
+ * @param userId - 用户 ID。
+ * @param userDir - 用户数据目录的绝对路径。
+ * @returns 合并后的 SkillIndex。
+ */
+export function getUserSkillIndex(userId: string, userDir: string): SkillIndex {
+  // 检查缓存。
+  const cached = userIndexCache.get(userId);
+  if (cached) return cached;
+
+  const globalIndex = getSkillIndex();
+
+  // 检查是否有需要用户变量解析的路径。
+  const userPaths = rawConfigPaths.filter((p) => USER_VAR_RE.test(p));
+  if (userPaths.length === 0) {
+    // 无用户专属路径，直接使用全局索引。
+    userIndexCache.set(userId, globalIndex);
+    return globalIndex;
+  }
+
+  // 解析用户专属路径并扫描。
+  const resolvedUserPaths = userPaths.map((p) => resolveSkillPath(p, userDir));
+  const userOnlyIndex = buildSkillIndex(resolvedUserPaths);
+
+  if (userOnlyIndex.nodes.size === 0) {
+    // 用户目录下无 skill，直接使用全局索引。
+    userIndexCache.set(userId, globalIndex);
+    return globalIndex;
+  }
+
+  // 合并：全局优先（全局路径排在前面，同名节点以先发现的为准）。
+  const merged: SkillIndex = {
+    nodes: new Map(globalIndex.nodes),
+    topLevel: [...globalIndex.topLevel],
+  };
+
+  for (const [path, node] of userOnlyIndex.nodes) {
+    if (!merged.nodes.has(path)) {
+      merged.nodes.set(path, node);
+    }
+  }
+  for (const path of userOnlyIndex.topLevel) {
+    if (!merged.topLevel.includes(path)) {
+      merged.topLevel.push(path);
+    }
+  }
+
+  const log = getLogger();
+  log.debug(
+    { userId, globalNodes: globalIndex.nodes.size, userNodes: userOnlyIndex.nodes.size, mergedNodes: merged.nodes.size },
+    'Per-user skill index built',
+  );
+
+  userIndexCache.set(userId, merged);
+  return merged;
+}
+
+/**
  * 重建 skill 索引（热重载时使用）。
  *
- * @param paths - 新的路径列表。
+ * @param paths - 新的路径列表（可能包含 ${userDir} 等变量）。
  */
 export function reloadSkillIndex(paths: string[]): void {
-  cachedIndex = buildSkillIndex(paths);
+  rawConfigPaths = paths;
+  const globalPaths = paths.filter((p) => !USER_VAR_RE.test(p));
+  cachedIndex = buildSkillIndex(globalPaths);
+  // 清除所有 per-user 缓存，下次访问时重建。
+  userIndexCache.clear();
+}
+
+/**
+ * 清除指定用户的 skill 索引缓存。
+ * 下次调用 getUserSkillIndex 时会重新扫描。
+ *
+ * @param userId - 用户 ID。
+ */
+export function invalidateUserSkillCache(userId: string): void {
+  userIndexCache.delete(userId);
 }
 
 /**
@@ -280,6 +385,15 @@ export function reloadSkillIndex(paths: string[]): void {
  */
 export function resetSkillIndex(): void {
   cachedIndex = null;
+  rawConfigPaths = [];
+  userIndexCache.clear();
+}
+
+/**
+ * 获取原始配置的 skill 路径列表（含变量占位符）。
+ */
+export function getRawSkillPaths(): string[] {
+  return rawConfigPaths;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,13 +412,36 @@ export function readNodeContent(node: SkillNode): string {
  *
  * 只包含 topLevel 节点的 name + description + type。
  * 明确区分 skill（叶子，可直接加载使用）和 skillset（中间节点，需展开浏览子节点）。
+ *
+ * @param index - Skill 索引。
+ * @param resolvedPaths - 已解析为绝对路径的 skill 搜索路径列表（可选，用于展示）。
  */
-export function formatTopLevelListing(index: SkillIndex): string {
-  if (index.topLevel.length === 0) return '';
+export function formatTopLevelListing(index: SkillIndex, resolvedPaths?: string[]): string {
+  const hasPaths = resolvedPaths && resolvedPaths.length > 0;
+
+  // 无搜索路径信息 + 无 skill 时返回空字符串（向后兼容）。
+  if (index.topLevel.length === 0 && !hasPaths) return '';
 
   const lines: string[] = ['## Available Skill Sets', ''];
   lines.push('Use the `load_skillset` tool to explore and load skill sets on demand.');
   lines.push('');
+
+  // 展示 skill 搜索路径，方便用户和 agent 知道如何安装新 skill。
+  if (hasPaths) {
+    lines.push('Skill search paths (in priority order):');
+    for (const p of resolvedPaths!) {
+      lines.push(`- \`${p}\``);
+    }
+    lines.push('');
+    lines.push('To install a new skill, place a directory with SKILL.md (or SKILLSET.md) in any of the above paths.');
+    lines.push('');
+  }
+
+  if (index.topLevel.length === 0) {
+    lines.push('No skills or skill sets are currently installed.');
+    return lines.join('\n');
+  }
+
   lines.push('- **(skill)** — a leaf node containing directly loadable expertise.');
   lines.push('- **(skillset)** — a category node; load it to see its children and navigate deeper.');
   lines.push('');
