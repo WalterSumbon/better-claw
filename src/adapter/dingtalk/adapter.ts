@@ -1,12 +1,99 @@
-import { basename, extname } from 'path';
+import { writeFileSync } from 'fs';
+import { basename, extname, join, resolve } from 'path';
 import { DWClient, TOPIC_ROBOT, EventAck } from 'dingtalk-stream-sdk-nodejs';
-import type { DWClientDownStream, RobotMessage } from 'dingtalk-stream-sdk-nodejs';
+import type { DWClientDownStream } from 'dingtalk-stream-sdk-nodejs';
 import type { MessageAdapter, SendFileOptions } from '../interface.js';
-import type { InboundMessage } from '../types.js';
+import type { InboundMessage, Attachment } from '../types.js';
 import { getLogger } from '../../logger/index.js';
+import { getConfig } from '../../config/index.js';
+import { ensureDir } from '../../utils/file.js';
+import { transcribeAudio } from '../../utils/transcribe.js';
 
 /** Access token 缓存有效期（毫秒），钉钉 token 有效期 7200 秒，提前 5 分钟刷新。 */
 const TOKEN_TTL_MS = (7200 - 300) * 1000;
+
+// ---------------------------------------------------------------------------
+// 钉钉机器人消息类型定义（SDK 仅提供 text 类型，此处补充完整）
+// ---------------------------------------------------------------------------
+
+/** 钉钉机器人消息基础字段。 */
+interface DingtalkRobotMessageBase {
+  conversationId: string;
+  chatbotCorpId: string;
+  chatbotUserId: string;
+  msgId: string;
+  senderNick: string;
+  isAdmin: boolean;
+  senderStaffId: string;
+  sessionWebhookExpiredTime: number;
+  createAt: number;
+  senderCorpId: string;
+  conversationType: string;
+  senderId: string;
+  sessionWebhook: string;
+  robotCode: string;
+  msgtype: string;
+}
+
+/** 钉钉文本消息。 */
+interface DingtalkTextMessage extends DingtalkRobotMessageBase {
+  msgtype: 'text';
+  text: { content: string };
+}
+
+/** 钉钉图片消息。 */
+interface DingtalkPictureMessage extends DingtalkRobotMessageBase {
+  msgtype: 'picture';
+  content: { downloadCode: string; pictureDownloadCode?: string };
+}
+
+/** 钉钉语音消息。 */
+interface DingtalkAudioMessage extends DingtalkRobotMessageBase {
+  msgtype: 'audio';
+  content: { downloadCode: string; recognition?: string };
+}
+
+/** 钉钉视频消息。 */
+interface DingtalkVideoMessage extends DingtalkRobotMessageBase {
+  msgtype: 'video';
+  content: { downloadCode: string; duration?: string; videoType?: string };
+}
+
+/** 钉钉文件消息。 */
+interface DingtalkFileMessage extends DingtalkRobotMessageBase {
+  msgtype: 'file';
+  content: { downloadCode: string; fileName?: string; fileId?: string; spaceId?: string };
+}
+
+/** 钉钉富文本消息元素。 */
+interface DingtalkRichTextElement {
+  text?: string;
+  type?: string;
+  downloadCode?: string;
+  pictureDownloadCode?: string;
+}
+
+/** 钉钉富文本消息。 */
+interface DingtalkRichTextMessage extends DingtalkRobotMessageBase {
+  msgtype: 'richText';
+  content: { richText: DingtalkRichTextElement[] };
+}
+
+/** 钉钉不支持的消息类型。 */
+interface DingtalkUnknownMessage extends DingtalkRobotMessageBase {
+  msgtype: 'unknownMsgType';
+  content: { unknownMsgType?: string };
+}
+
+/** 所有钉钉机器人消息类型的联合。 */
+type DingtalkRobotMessage =
+  | DingtalkTextMessage
+  | DingtalkPictureMessage
+  | DingtalkAudioMessage
+  | DingtalkVideoMessage
+  | DingtalkFileMessage
+  | DingtalkRichTextMessage
+  | DingtalkUnknownMessage;
 
 /** sessionWebhook 缓存条目。 */
 interface WebhookCacheEntry {
@@ -167,6 +254,281 @@ export class DingtalkAdapter implements MessageAdapter {
   }
 
   /**
+   * 通过 downloadCode 获取临时下载 URL。
+   *
+   * @param downloadCode - 钉钉消息中的 downloadCode。
+   * @returns 临时下载 URL。
+   */
+  private async getDownloadUrl(downloadCode: string): Promise<string> {
+    const log = getLogger();
+    const token = await this.getAccessToken();
+
+    const res = await fetch(`${this.apiBase}/v1.0/robot/messageFiles/download`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-acs-dingtalk-access-token': token,
+      },
+      body: JSON.stringify({
+        downloadCode,
+        robotCode: this.robotCode,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      log.error({ status: res.status, body: errText }, 'DingTalk download URL request failed');
+      throw new Error(`DingTalk download failed: ${res.status}`);
+    }
+
+    const data = await res.json() as { downloadUrl?: string };
+    if (!data.downloadUrl) {
+      throw new Error('DingTalk download: no downloadUrl in response');
+    }
+
+    return data.downloadUrl;
+  }
+
+  /**
+   * 下载远程文件到本地 uploads 目录。
+   *
+   * @param url - 文件下载 URL。
+   * @param userId - 用户 ID（用于目录隔离）。
+   * @param msgId - 消息 ID（用于文件名去重）。
+   * @param ext - 文件扩展名（含 "."）。
+   * @returns 本地文件绝对路径。
+   */
+  private async downloadToLocal(url: string, userId: string, msgId: string, ext: string): Promise<string> {
+    const config = getConfig();
+    const uploadDir = join(config.dataDir, 'uploads', userId);
+    ensureDir(uploadDir);
+
+    const fileName = `${Date.now()}_${msgId}${ext}`;
+    const filePath = join(uploadDir, fileName);
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`File download failed: ${res.status}`);
+
+    const buffer = Buffer.from(await res.arrayBuffer());
+    writeFileSync(filePath, buffer);
+
+    return resolve(filePath);
+  }
+
+  /**
+   * 通过 downloadCode 下载钉钉媒体文件到本地。
+   *
+   * @param downloadCode - 消息中的 downloadCode。
+   * @param userId - 用户 staffId。
+   * @param msgId - 消息 ID。
+   * @param ext - 文件扩展名。
+   * @returns 本地文件绝对路径。
+   */
+  private async downloadMediaFile(downloadCode: string, userId: string, msgId: string, ext: string): Promise<string> {
+    const url = await this.getDownloadUrl(downloadCode);
+    return this.downloadToLocal(url, userId, msgId, ext);
+  }
+
+  /**
+   * 处理图片消息。
+   */
+  private async handlePictureMessage(
+    robotMsg: DingtalkPictureMessage,
+    staffId: string,
+  ): Promise<Partial<Pick<InboundMessage, 'text' | 'attachments'>>> {
+    const log = getLogger();
+
+    try {
+      const localPath = await this.downloadMediaFile(
+        robotMsg.content.downloadCode,
+        staffId,
+        robotMsg.msgId,
+        '.jpg',
+      );
+
+      const attachment: Attachment = {
+        type: 'photo',
+        localPath,
+        mimeType: 'image/jpeg',
+      };
+
+      return {
+        text: `[用户发送了图片: ${localPath}]`,
+        attachments: [attachment],
+      };
+    } catch (err) {
+      log.error({ err, staffId }, 'Failed to download DingTalk picture');
+      return { text: '[用户发送了图片，但下载失败]' };
+    }
+  }
+
+  /**
+   * 处理语音消息。
+   *
+   * 优先使用钉钉内置 ASR（recognition 字段），不可用时回退到 Whisper。
+   */
+  private async handleAudioMessage(
+    robotMsg: DingtalkAudioMessage,
+    staffId: string,
+  ): Promise<Partial<Pick<InboundMessage, 'text' | 'attachments'>>> {
+    const log = getLogger();
+
+    let localPath: string | undefined;
+    try {
+      localPath = await this.downloadMediaFile(
+        robotMsg.content.downloadCode,
+        staffId,
+        robotMsg.msgId,
+        '.ogg',
+      );
+    } catch (err) {
+      log.error({ err, staffId }, 'Failed to download DingTalk audio');
+    }
+
+    const attachment: Attachment | undefined = localPath
+      ? { type: 'voice', localPath, mimeType: 'audio/ogg' }
+      : undefined;
+
+    // 优先使用钉钉内置语音识别。
+    const recognition = robotMsg.content.recognition?.trim();
+    if (recognition) {
+      log.info({ staffId, textLength: recognition.length }, 'DingTalk built-in ASR available');
+      return {
+        text: `[用户发送了语音消息，转录文本: ${recognition}]`,
+        attachments: attachment ? [attachment] : undefined,
+      };
+    }
+
+    // 钉钉 ASR 不可用，尝试 Whisper 转录。
+    if (localPath) {
+      const sttResult = await transcribeAudio(localPath);
+      if (sttResult.text) {
+        return {
+          text: `[用户发送了语音消息，转录文本: ${sttResult.text}]`,
+          attachments: [attachment!],
+        };
+      }
+
+      const reason = sttResult.unavailableReason ? `（原因: ${sttResult.unavailableReason}）` : '';
+      return {
+        text: `[用户发送了语音消息: ${localPath}]（自动语音转文字不可用${reason}，请使用可用的语音转录工具或 skill 来处理该音频文件）`,
+        attachments: [attachment!],
+      };
+    }
+
+    return { text: '[用户发送了语音消息，但下载失败且无内置转录]' };
+  }
+
+  /**
+   * 处理视频消息。
+   */
+  private async handleVideoMessage(
+    robotMsg: DingtalkVideoMessage,
+    staffId: string,
+  ): Promise<Partial<Pick<InboundMessage, 'text' | 'attachments'>>> {
+    const log = getLogger();
+    const videoExt = `.${robotMsg.content.videoType ?? 'mp4'}`;
+
+    try {
+      const localPath = await this.downloadMediaFile(
+        robotMsg.content.downloadCode,
+        staffId,
+        robotMsg.msgId,
+        videoExt,
+      );
+
+      const attachment: Attachment = {
+        type: 'video',
+        localPath,
+        mimeType: `video/${robotMsg.content.videoType ?? 'mp4'}`,
+      };
+
+      const durationInfo = robotMsg.content.duration ? `，时长 ${robotMsg.content.duration} 秒` : '';
+      return {
+        text: `[用户发送了视频: ${localPath}${durationInfo}]`,
+        attachments: [attachment],
+      };
+    } catch (err) {
+      log.error({ err, staffId }, 'Failed to download DingTalk video');
+      return { text: '[用户发送了视频，但下载失败]' };
+    }
+  }
+
+  /**
+   * 处理文件消息。
+   */
+  private async handleFileMessage(
+    robotMsg: DingtalkFileMessage,
+    staffId: string,
+  ): Promise<Partial<Pick<InboundMessage, 'text' | 'attachments'>>> {
+    const log = getLogger();
+    const originalName = robotMsg.content.fileName ?? 'unknown';
+    const dotIdx = originalName.lastIndexOf('.');
+    const ext = dotIdx !== -1 ? originalName.slice(dotIdx) : '';
+
+    try {
+      const localPath = await this.downloadMediaFile(
+        robotMsg.content.downloadCode,
+        staffId,
+        robotMsg.msgId,
+        ext,
+      );
+
+      const attachment: Attachment = {
+        type: 'document',
+        localPath,
+        fileName: originalName,
+      };
+
+      return {
+        text: `[用户发送了文件: ${localPath}] (文件名: ${originalName})`,
+        attachments: [attachment],
+      };
+    } catch (err) {
+      log.error({ err, staffId }, 'Failed to download DingTalk file');
+      return { text: `[用户发送了文件 "${originalName}"，但下载失败]` };
+    }
+  }
+
+  /**
+   * 处理富文本消息（图文混排）。
+   */
+  private async handleRichTextMessage(
+    robotMsg: DingtalkRichTextMessage,
+    staffId: string,
+  ): Promise<Partial<Pick<InboundMessage, 'text' | 'attachments'>>> {
+    const log = getLogger();
+    const elements = robotMsg.content.richText ?? [];
+    const textParts: string[] = [];
+    const attachments: Attachment[] = [];
+
+    for (const elem of elements) {
+      if (elem.text) {
+        textParts.push(elem.text);
+      } else if (elem.type === 'picture' && elem.downloadCode) {
+        try {
+          const localPath = await this.downloadMediaFile(
+            elem.downloadCode,
+            staffId,
+            robotMsg.msgId,
+            '.jpg',
+          );
+          attachments.push({ type: 'photo', localPath, mimeType: 'image/jpeg' });
+          textParts.push(`[图片: ${localPath}]`);
+        } catch (err) {
+          log.error({ err, staffId }, 'Failed to download DingTalk richText image');
+          textParts.push('[图片下载失败]');
+        }
+      }
+    }
+
+    return {
+      text: textParts.join('\n') || '[用户发送了富文本消息]',
+      attachments: attachments.length > 0 ? attachments : undefined,
+    };
+  }
+
+  /**
    * 启动钉钉适配器，开始监听消息。
    *
    * @param handler - 收到消息时的回调。
@@ -175,7 +537,7 @@ export class DingtalkAdapter implements MessageAdapter {
     const log = getLogger();
 
     this.client.registerCallbackListener(TOPIC_ROBOT, async (res: DWClientDownStream) => {
-      const robotMsg = JSON.parse(res.data) as RobotMessage;
+      const robotMsg = JSON.parse(res.data) as DingtalkRobotMessage;
 
       // 仅处理单聊消息（conversationType == "1"）。
       if (robotMsg.conversationType !== '1') {
@@ -186,18 +548,66 @@ export class DingtalkAdapter implements MessageAdapter {
       }
 
       const staffId = robotMsg.senderStaffId;
-      const text = robotMsg.text?.content?.trim() ?? '';
 
-      log.info({ staffId, text: text.slice(0, 100) }, 'DingTalk message received');
+      log.info({ staffId, msgtype: robotMsg.msgtype }, 'DingTalk message received');
 
       // 缓存 sessionWebhook。
       if (robotMsg.sessionWebhook && robotMsg.sessionWebhookExpiredTime) {
         this.cacheWebhook(staffId, robotMsg.sessionWebhook, robotMsg.sessionWebhookExpiredTime);
       }
 
-      // 解析命令。
+      // ack 回调，防止钉钉 60 秒后重试（尽早 ack，媒体下载可能耗时）。
+      this.client.send(res.headers.messageId, { status: EventAck.SUCCESS });
+
+      // 根据消息类型解析内容。
+      let text = '';
+      let attachments: Attachment[] | undefined;
+
+      switch (robotMsg.msgtype) {
+        case 'text': {
+          text = robotMsg.text.content?.trim() ?? '';
+          break;
+        }
+        case 'picture': {
+          const result = await this.handlePictureMessage(robotMsg, staffId);
+          text = result.text ?? '';
+          attachments = result.attachments;
+          break;
+        }
+        case 'audio': {
+          const result = await this.handleAudioMessage(robotMsg, staffId);
+          text = result.text ?? '';
+          attachments = result.attachments;
+          break;
+        }
+        case 'video': {
+          const result = await this.handleVideoMessage(robotMsg, staffId);
+          text = result.text ?? '';
+          attachments = result.attachments;
+          break;
+        }
+        case 'file': {
+          const result = await this.handleFileMessage(robotMsg, staffId);
+          text = result.text ?? '';
+          attachments = result.attachments;
+          break;
+        }
+        case 'richText': {
+          const result = await this.handleRichTextMessage(robotMsg, staffId);
+          text = result.text ?? '';
+          attachments = result.attachments;
+          break;
+        }
+        default: {
+          log.debug({ msgtype: robotMsg.msgtype, staffId }, 'DingTalk: unsupported message type');
+          text = `[用户发送了不支持的消息类型: ${robotMsg.msgtype}]`;
+          break;
+        }
+      }
+
+      // 解析命令（仅对纯文本消息）。
       const prefix = this.commandPrefix;
-      const isCommand = text.startsWith(prefix);
+      const isCommand = !attachments && text.startsWith(prefix);
       let commandName: string | undefined;
       let commandArgs: string | undefined;
 
@@ -216,10 +626,8 @@ export class DingtalkAdapter implements MessageAdapter {
         isCommand,
         commandName,
         commandArgs,
+        attachments,
       };
-
-      // ack 回调，防止钉钉 60 秒后重试。
-      this.client.send(res.headers.messageId, { status: EventAck.SUCCESS });
 
       try {
         await handler(inboundMsg);
