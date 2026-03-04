@@ -561,7 +561,7 @@ describe('Permissions', () => {
       const userBDir = resolve(dataDir, 'users', userB.userId);
 
       expect(settings.filesystem?.denyRead).toContain(userBDir);
-      expect(settings.filesystem?.denyWrite).toContain(userBDir);
+      // 默认配置不再有冗余的 denyWrite（allowWrite 白名单已覆盖）。
     });
   });
 

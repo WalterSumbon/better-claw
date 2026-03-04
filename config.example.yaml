@@ -213,8 +213,8 @@ permissions:
     #     - ${userWorkspace}     — workspace 可写
     #     （其余路径在 allowWrite 白名单模式下默认拒绝写入）
     #
-    #   denyWrite / denyRead:
-    #     - ${otherUserDir}      — 禁止读写其他用户的目录
+    #   denyRead:
+    #     - ${otherUserDir}      — 禁止读取其他用户的目录
     #
     #   最终效果（userDir 下各路径）：
     #     profile.json              → 只读
@@ -230,8 +230,6 @@ permissions:
         allowWrite:
           - "${userDir}/memory"
           - "${userWorkspace}"
-        denyWrite:
-          - "${otherUserDir}"
         denyRead:
           - "${otherUserDir}"
 

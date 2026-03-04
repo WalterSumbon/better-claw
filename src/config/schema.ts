@@ -158,7 +158,6 @@ const PermissionsConfigSchema = z.object({
     user: {
       filesystem: {
         allowWrite: ['${userDir}/memory', '${userWorkspace}'],
-        denyWrite: ['${otherUserDir}'],
         denyRead: ['${otherUserDir}'],
       },
     },
@@ -238,7 +237,6 @@ export const AppConfigSchema = z.object({
       user: {
         filesystem: {
           allowWrite: ['${userDir}/memory', '${userWorkspace}'],
-          denyWrite: ['${otherUserDir}'],
           denyRead: ['${otherUserDir}'],
         },
       },
