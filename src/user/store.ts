@@ -110,6 +110,21 @@ export function deleteUserDir(userId: string): void {
 }
 
 /**
+ * 读取用户的 per-user MCP server 配置。
+ *
+ * 配置文件为 `<userDir>/mcp-servers.json`，格式与 Claude Code settings.json
+ * 中的 mcpServers 段相同。每次调用直接读文件，不缓存，天然支持热加载。
+ *
+ * @param userId - 用户 ID。
+ * @returns MCP server 配置对象，文件不存在或为空时返回空对象。
+ */
+export function readUserMcpServers(userId: string): Record<string, Record<string, unknown>> {
+  const filePath = join(getUserDir(userId), 'mcp-servers.json');
+  const data = readJsonFile<Record<string, Record<string, unknown>>>(filePath);
+  return data ?? {};
+}
+
+/**
  * 读取所有用户 profile。
  *
  * @returns 所有用户档案数组。

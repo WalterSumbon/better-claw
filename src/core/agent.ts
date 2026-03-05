@@ -17,7 +17,7 @@ import {
   ensureActiveSession,
   updateSessionAfterQuery,
 } from './session-manager.js';
-import { getUserWorkspacePath } from '../user/store.js';
+import { getUserWorkspacePath, readUserMcpServers } from '../user/store.js';
 import { buildCanUseTool, buildSandboxSettings, resolveUserPermissions } from './permissions.js';
 import { getProjectLocalSettings } from '../config/claude-settings.js';
 
@@ -235,6 +235,9 @@ export async function sendToAgent(
       // 仅传入 project/local 级 MCP servers。
       // user 级由 SDK 通过 settingSources: ['user'] 自行加载。
       ...getProjectLocalSettings().mcpServers,
+      // per-user MCP servers（<userDir>/mcp-servers.json）。
+      // 每次读文件不缓存，天然支持热加载。后加载的优先级更高，可覆盖同名 server。
+      ...readUserMcpServers(userId),
     },
     allowedTools: [
       'mcp__better-claw__memory_read',
