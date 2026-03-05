@@ -16,11 +16,19 @@
 # 适合添加全局行为指令、角色补充说明、业务规则等。
 # 支持热重载（修改后下次对话立即生效，无需重启）。
 #
+# 支持路径变量展开（与权限配置中的变量一致）：
+#   ${userDir}       — 当前用户的数据目录
+#   ${userWorkspace} — 当前用户的 workspace
+#   ${dataDir}       — 全局数据目录
+#   ${home}          — 系统用户主目录
+#   ${configFile}    — 配置文件路径
+#
 # 字符串形式：
 # systemPrompt: |
 #   ## 额外指令
 #   你是一个专注于金融领域的助手，回答问题时优先考虑合规性。
 #   所有涉及投资建议的回复都必须包含风险提示。
+#   用户的数据目录在 ${userDir}。
 #
 # 数组形式（多个独立段落）：
 # systemPrompt:
@@ -511,3 +519,31 @@ skills:
 #   # 识别语言（可选）。不设置则自动检测语言。
 #   # 常用值：zh（中文）, en（英文）, ja（日文）等。
 #   # language: "zh"
+
+# ============================================================================
+# Per-User MCP Servers（非配置文件项，仅供参考）
+# ============================================================================
+#
+# 每个用户可以在自己的数据目录下创建 mcp-servers.json 文件来安装私有 MCP servers：
+#
+#   <dataDir>/users/<userId>/mcp-servers.json
+#
+# 格式与 Claude Code settings.json 中的 mcpServers 段相同：
+#
+#   {
+#     "my-db": {
+#       "type": "stdio",
+#       "command": "npx",
+#       "args": ["-y", "@modelcontextprotocol/server-sqlite", "/path/to/db"]
+#     },
+#     "my-api": {
+#       "type": "http",
+#       "url": "http://localhost:3001/mcp"
+#     }
+#   }
+#
+# 特性：
+#   - 热加载：修改文件后下条消息立即生效，无需重启。
+#   - 用户隔离：每个用户只能看到和使用自己安装的 MCP servers。
+#   - 优先级：per-user > project/local settings > 内置 better-claw。
+#     同名 server 后加载的覆盖先加载的。

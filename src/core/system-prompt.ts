@@ -136,6 +136,21 @@ Your Bash commands run inside an OS-level sandbox. The \`dangerouslyDisableSandb
 
 Sessions auto-rotate when idle too long or when the conversation grows too large.
 
+### Per-User MCP Servers
+Users can install their own MCP servers by creating a \`mcp-servers.json\` file in their data directory (\`${getUserDir(userId)}/mcp-servers.json\`). The format is the same as Claude Code settings.json mcpServers:
+
+\`\`\`json
+{
+  "server-name": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@some/mcp-server"]
+  }
+}
+\`\`\`
+
+Per-user MCP servers are hot-reloaded — changes take effect on the next message without restart.
+
 ## Recalling Past Conversations
 
 You are a **persistent** personal assistant — the user expects you to remember previous interactions across sessions.
@@ -194,7 +209,7 @@ Tips for efficient lookup:
     // Skill index 未初始化时静默跳过。
   }
 
-  // 8. 自定义 system prompt 注入。
+  // 8. 自定义 system prompt 注入（支持 ${userDir} 等路径变量）。
   const config = getConfig();
   if (config.systemPrompt) {
     const customSections = Array.isArray(config.systemPrompt)
@@ -203,7 +218,10 @@ Tips for efficient lookup:
     for (const section of customSections) {
       const trimmed = section.trim();
       if (trimmed) {
-        sections.push(trimmed);
+        const resolved = resolvePathVariable(trimmed, userId);
+        if (resolved !== null) {
+          sections.push(resolved);
+        }
       }
     }
   }
