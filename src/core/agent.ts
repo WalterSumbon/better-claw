@@ -21,6 +21,27 @@ import { getUserWorkspacePath, readUserMcpServers } from '../user/store.js';
 import { buildCanUseTool, buildSandboxSettings, resolveUserPermissions } from './permissions.js';
 import { getProjectLocalSettings } from '../config/claude-settings.js';
 
+/**
+ * 为外部 MCP servers 注入用户 ID 环境变量。
+ * 这样每个 MCP server 进程可以通过 BETTER_CLAW_USER_ID 识别当前用户。
+ */
+function injectUserEnvToMcpServers<T extends Record<string, { env?: Record<string, string> }>>(
+  mcpServers: T,
+  userId: string,
+): T {
+  const result = {} as Record<string, unknown>;
+  for (const [name, server] of Object.entries(mcpServers)) {
+    result[name] = {
+      ...server,
+      env: {
+        ...server.env,
+        BETTER_CLAW_USER_ID: userId,
+      },
+    };
+  }
+  return result as T;
+}
+
 /** 每个用户的 agent 会话状态（内存中）。 */
 interface AgentSession {
   /** 本地会话 ID。 */
@@ -232,12 +253,12 @@ export async function sendToAgent(
     env: sdkEnv,
     mcpServers: {
       'better-claw': createAppMcpServer(),
-      // 仅传入 project/local 级 MCP servers。
-      // user 级由 SDK 通过 settingSources: ['user'] 自行加载。
-      ...getProjectLocalSettings().mcpServers,
+      // 外部 MCP servers 注入 BETTER_CLAW_USER_ID 环境变量，实现多用户感知。
+      // project/local 级 MCP servers（user 级由 SDK 通过 settingSources: ['user'] 自行加载）。
+      ...injectUserEnvToMcpServers(getProjectLocalSettings().mcpServers, userId),
       // per-user MCP servers（<userDir>/mcp-servers.json）。
       // 每次读文件不缓存，天然支持热加载。后加载的优先级更高，可覆盖同名 server。
-      ...readUserMcpServers(userId),
+      ...injectUserEnvToMcpServers(readUserMcpServers(userId), userId),
     },
     allowedTools: [
       'mcp__better-claw__memory_read',
