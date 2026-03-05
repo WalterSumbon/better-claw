@@ -205,6 +205,13 @@ const SpeechToTextConfigSchema = z.object({
 
 /** 应用全局配置 schema。 */
 export const AppConfigSchema = z.object({
+  /** 自定义 system prompt 注入内容。
+   *  字符串或字符串数组，每个条目作为独立段落注入 system prompt 末尾（在 session history 之前）。
+   *  用于添加全局行为指令、角色补充说明、业务规则等。 */
+  systemPrompt: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).optional(),
   /** Anthropic API 配置。 */
   anthropic: AnthropicConfigSchema.default(() => ({
     model: 'claude-opus-4-6',

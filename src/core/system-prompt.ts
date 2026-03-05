@@ -194,7 +194,21 @@ Tips for efficient lookup:
     // Skill index 未初始化时静默跳过。
   }
 
-  // 8. 核心记忆内容。
+  // 8. 自定义 system prompt 注入。
+  const config = getConfig();
+  if (config.systemPrompt) {
+    const customSections = Array.isArray(config.systemPrompt)
+      ? config.systemPrompt
+      : [config.systemPrompt];
+    for (const section of customSections) {
+      const trimmed = section.trim();
+      if (trimmed) {
+        sections.push(trimmed);
+      }
+    }
+  }
+
+  // 9. 核心记忆内容。
   const coreMemory = readCoreMemory(userId);
   const hasContent =
     Object.keys(coreMemory.preferences).length > 0 ||
@@ -206,7 +220,7 @@ Tips for efficient lookup:
     );
   }
 
-  // 9. 会话历史。
+  // 10. 会话历史。
   const sessionHistory = getSessionHistoryForPrompt(userId);
   if (sessionHistory) {
     sections.push(`## Session History\n\n${sessionHistory}`);

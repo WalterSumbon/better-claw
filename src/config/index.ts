@@ -84,6 +84,7 @@ const HOT_RELOADABLE_KEYS = [
   'speechToText',
   'permissionMode',
   'skills',
+  'systemPrompt',
 ] as const;
 
 /** 不可热重载的配置字段列表（需要重启）。 */
