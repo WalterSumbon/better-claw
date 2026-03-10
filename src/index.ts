@@ -425,13 +425,13 @@ function checkClaudeCodeInstalled(): void {
     if (!version.includes('Claude Code')) {
       console.error('[Better-Claw] Error: "claude" command found but does not appear to be Claude Code.');
       console.error(`  Detected version string: ${version}`);
-      console.error('  Please install Claude Code: https://docs.anthropic.com/en/docs/claude-code');
+      console.error('  Install Claude Code: curl -fsSL https://claude.ai/install.sh | bash');
       process.exit(1);
     }
   } catch {
     console.error('[Better-Claw] Error: Claude Code CLI ("claude") is not installed or not in PATH.');
     console.error('  Better-Claw requires Claude Code to run.');
-    console.error('  Install it with: npm install -g @anthropic-ai/claude-code');
+    console.error('  Install: curl -fsSL https://claude.ai/install.sh | bash');
     console.error('  More info: https://docs.anthropic.com/en/docs/claude-code');
     process.exit(1);
   }
