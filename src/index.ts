@@ -97,6 +97,14 @@ function ensureDataDir(dataDir: string): boolean {
 const adapters: MessageAdapter[] = [];
 
 /**
+ * 每个用户最后活跃的适配器信息。
+ *
+ * 当用户通过多个平台（Telegram、CLI、AgentBox 等）连接时，
+ * bot 的回复会发送给最后一个给 agent 发消息的平台。
+ */
+const lastActiveAdapter = new Map<string, { adapter: MessageAdapter; platformUserId: string }>();
+
+/**
  * 为用户消息添加信封（平台来源 + 发送时间）。
  *
  * 格式：`[platform | 2026-03-10 09:43 Asia/Shanghai (UTC+8)]\n原始消息`
@@ -244,14 +252,29 @@ async function handleMessage(
     return;
   }
 
+  // 更新该用户的"最后活跃适配器"。后续 bot 回复会发送到这个平台。
+  lastActiveAdapter.set(userId, { adapter, platformUserId: msg.platformUserId });
+
   // 入队处理（附加消息信封）。
+  // reply / sendFile / showTyping 回调动态查询 lastActiveAdapter，
+  // 实现"回复发送给最后一个给 agent 发消息的平台"。
   enqueue({
     userId,
     text: wrapMessageEnvelope(msg.text, msg.platform, userId),
-    reply: (text: string) => adapter.sendText(msg.platformUserId, text),
-    sendFile: (filePath, options) => adapter.sendFile(msg.platformUserId, filePath, options),
+    reply: (text: string) => {
+      const active = lastActiveAdapter.get(userId);
+      if (active) return active.adapter.sendText(active.platformUserId, text);
+      return adapter.sendText(msg.platformUserId, text);
+    },
+    sendFile: (filePath, options) => {
+      const active = lastActiveAdapter.get(userId);
+      if (active) return active.adapter.sendFile(active.platformUserId, filePath, options);
+      return adapter.sendFile(msg.platformUserId, filePath, options);
+    },
     showTyping: () => {
-      adapter.showTyping(msg.platformUserId).catch(() => {});
+      const active = lastActiveAdapter.get(userId);
+      if (active) active.adapter.showTyping(active.platformUserId).catch(() => {});
+      else adapter.showTyping(msg.platformUserId).catch(() => {});
     },
     platform: msg.platform,
   });

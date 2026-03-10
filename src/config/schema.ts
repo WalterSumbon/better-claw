@@ -61,7 +61,7 @@ const SessionConfigSchema = z.object({
   rotationTimeoutHours: z.number().default(4),
   /** Context 占比软轮转阈值（0-1），达到此值时在后台启动 summary 生成和会话浓缩，
    *  但不阻塞当前消息处理。 */
-  rotationContextRatio: z.number().min(0).max(1).default(0.55),
+  rotationContextRatio: z.number().min(0).max(1).default(0.5),
   /** Context 占比强制轮转兜底阈值（0-1），超过此值时同步等待后台完成或直接同步轮转，
    *  期间暂停队列消费。必须大于 rotationContextRatio。 */
   rotationForceRatio: z.number().min(0).max(1).default(0.7),
@@ -234,6 +234,9 @@ const WebhookConfigSchema = z.object({
   apiKey: z.string().optional(),
 });
 
+/** 传递给 SDK subprocess 的额外环境变量（全局，对所有用户生效）。 */
+const SdkEnvConfigSchema = z.record(z.string(), z.string()).default(() => ({}));
+
 /** 应用全局配置 schema。 */
 export const AppConfigSchema = z.object({
   /** 自定义 system prompt 注入内容。
@@ -287,7 +290,7 @@ export const AppConfigSchema = z.object({
   /** 会话管理配置。 */
   session: SessionConfigSchema.default(() => ({
     rotationTimeoutHours: 4,
-    rotationContextRatio: 0.55,
+    rotationContextRatio: 0.5,
     rotationForceRatio: 0.7,
     summaryEnabled: true,
     summaryModel: 'claude-haiku-4-5-20251001',
@@ -320,6 +323,10 @@ export const AppConfigSchema = z.object({
   webhook: WebhookConfigSchema.optional(),
   /** AgentBox 配置（可选，不配置则不启动 AgentBox 适配器）。 */
   agentbox: AgentBoxConfigSchema.optional(),
+  /** 传递给 SDK subprocess 的额外环境变量（键值对）。
+   *  对所有用户（包括 admin）全局生效，在 process.env 之后追加。
+   *  适合设置 SDK 行为参数，如 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE。 */
+  sdkEnv: SdkEnvConfigSchema,
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

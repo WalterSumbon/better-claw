@@ -56,6 +56,10 @@ export class AgentBoxAdapter implements MessageAdapter {
   private running = false;
   private handler: ((msg: InboundMessage) => Promise<void>) | null = null;
 
+  /** 当前重连延迟（指数退避）。 */
+  private currentReconnectDelay: number;
+  private static readonly MAX_RECONNECT_DELAY = 5 * 60_000; // 最大 5 分钟
+
   /** 活跃请求：conversationId → ActiveRequest */
   private activeRequests = new Map<string, ActiveRequest>();
 
@@ -68,6 +72,7 @@ export class AgentBoxAdapter implements MessageAdapter {
     commandPrefix: string,
   ) {
     this.commandPrefix = commandPrefix;
+    this.currentReconnectDelay = reconnectInterval;
   }
 
   /**
@@ -156,6 +161,8 @@ export class AgentBoxAdapter implements MessageAdapter {
 
     this.ws.on('open', () => {
       log.info('AgentBox: connected, registering agent');
+      // 连接成功，重置退避延迟。
+      this.currentReconnectDelay = this.reconnectInterval;
       this.send({
         type: 'register',
         descriptor: {
@@ -179,7 +186,10 @@ export class AgentBoxAdapter implements MessageAdapter {
 
         // AgentRequest：有 requestId + conversationId + messages。
         if (data.requestId && data.conversationId && data.messages) {
-          this.handleAgentRequest(data as AgentRequest);
+          this.handleAgentRequest(data as AgentRequest).catch((e) => {
+            const errMsg = e instanceof Error ? e.message : String(e);
+            log.error({ err: errMsg }, 'AgentBox: unhandled error in handleAgentRequest');
+          });
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -191,8 +201,14 @@ export class AgentBoxAdapter implements MessageAdapter {
       log.info('AgentBox: disconnected');
       this.ws = null;
       if (this.running) {
-        log.info({ interval: this.reconnectInterval }, 'AgentBox: reconnecting...');
-        setTimeout(() => this.connect(), this.reconnectInterval);
+        const delay = this.currentReconnectDelay;
+        log.info({ interval: delay }, 'AgentBox: reconnecting...');
+        setTimeout(() => this.connect(), delay);
+        // 指数退避：每次翻倍，上限 5 分钟。
+        this.currentReconnectDelay = Math.min(
+          delay * 2,
+          AgentBoxAdapter.MAX_RECONNECT_DELAY,
+        );
       }
     });
 

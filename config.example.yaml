@@ -355,14 +355,14 @@ session:
   # Context 占比软轮转阈值（0-1）。
   # 当上下文 token 数占模型 context window 的比例达到此值时，
   # 在后台异步启动 summary 生成和会话浓缩，不阻塞当前消息处理。
-  # 默认值：0.8
-  rotationContextRatio: 0.8
+  # 默认值：0.5
+  rotationContextRatio: 0.5
 
   # Context 占比强制轮转阈值（0-1）。
   # 当上下文比例超过此值时，同步等待轮转完成后才处理下一条消息。
   # 必须大于 rotationContextRatio。
-  # 默认值：0.9
-  rotationForceRatio: 0.9
+  # 默认值：0.7
+  rotationForceRatio: 0.7
 
   # 轮转时是否生成 AI 摘要。
   # 启用后会在会话归档时自动生成对话摘要，用于后续会话的上下文衔接。
@@ -533,6 +533,23 @@ skills:
 #   # 是否启用消息信封。
 #   # 默认值：true
 #   enabled: true
+
+# ----------------------------------------------------------------------------
+# SDK 环境变量配置
+# ----------------------------------------------------------------------------
+# 传递给 SDK subprocess 的额外环境变量（键值对）。
+# 对所有用户（包括 admin）全局生效，在 process.env 之后追加。
+# 适合设置 SDK 行为参数，不影响 Anthropic 认证变量（后者始终从 anthropic 配置注入）。
+# 支持热重载。
+#
+# sdkEnv:
+#   # 调整 SDK 自动 compact 的触发阈值（1-100，百分比）。
+#   # 默认约 75%。设为较高值可让 Better-Claw 的 session 轮转先于 compact 介入，
+#   # 避免 compact 过程中可能出现的 SDK 流挂起问题。
+#   CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "95"
+#
+#   # 其他 SDK 或工具链需要的环境变量。
+#   MY_CUSTOM_VAR: "value"
 
 # ----------------------------------------------------------------------------
 # Webhook 配置（可选）
