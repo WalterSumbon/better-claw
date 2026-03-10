@@ -42,6 +42,8 @@ export interface CarryoverEntry {
   role: 'user' | 'assistant';
   /** 消息内容。 */
   content: string;
+  /** 完整的 tool_use + tool_result 块（仅当 carryoverIncludeToolCalls 启用时存在）。 */
+  blocks?: ConversationBlock[];
 }
 
 /** 对话内容块（assistant 消息的完整交互记录）。 */

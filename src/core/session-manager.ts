@@ -26,7 +26,7 @@ import {
 // ─── 后台轮转状态 ────────────────────────────────────────────────────
 
 /** 后台轮转准备状态。 */
-interface BackgroundRotation {
+export interface BackgroundRotation {
   /** 当前状态：preparing=后台生成中，ready=已就绪待切换。 */
   state: 'preparing' | 'ready';
   /** 触发后台准备时的 messageCount（用于识别中间对话）。 */
@@ -41,6 +41,13 @@ interface BackgroundRotation {
 
 /** 每用户后台轮转状态（内存中，进程重启后丢失）。 */
 const bgRotations = new Map<string, BackgroundRotation>();
+
+/**
+ * 获取用户的后台轮转状态（供 agent.ts 中间检查使用）。
+ */
+export function getBgRotation(userId: string): BackgroundRotation | undefined {
+  return bgRotations.get(userId);
+}
 
 // ─── Carryover 提取（规则化 digest） ─────────────────────────────────
 
@@ -79,6 +86,17 @@ export function digestAssistantContent(
 }
 
 /**
+ * 从 assistant 消息的交互块中提取 tool_use 和 tool_result 块。
+ *
+ * @param blocks - 交互块序列。
+ * @returns 仅包含 tool_use 和 tool_result 的块数组，无工具调用时返回 undefined。
+ */
+function extractToolBlocks(blocks: ConversationBlock[]): ConversationBlock[] | undefined {
+  const toolBlocks = blocks.filter(b => b.type === 'tool_use' || b.type === 'tool_result');
+  return toolBlocks.length > 0 ? toolBlocks : undefined;
+}
+
+/**
  * 从对话记录中提取最后 N 轮的 carryover，并对内容做 digest。
  *
  * 一轮 = 1 条 user 消息 + 该轮最后 1 条 assistant 回复（agent 循环中的中间回复丢弃）。
@@ -86,12 +104,14 @@ export function digestAssistantContent(
  * @param conversation - 完整对话记录。
  * @param maxTurns - 最多提取的轮次数。
  * @param digest - Digest 参数。
+ * @param options - 可选配置。
  * @returns CarryoverEntry 数组。
  */
 export function extractCarryover(
   conversation: ConversationEntry[],
   maxTurns: number,
   digest: DigestParams,
+  options?: { includeToolCalls?: boolean },
 ): CarryoverEntry[] {
   if (maxTurns <= 0 || conversation.length === 0) return [];
 
@@ -123,7 +143,7 @@ export function extractCarryover(
       content: digestUserContent(turn.user.content, digest.userMaxChars),
     });
     if (turn.assistant) {
-      result.push({
+      const entry: CarryoverEntry = {
         timestamp: turn.assistant.timestamp,
         role: 'assistant',
         content: digestAssistantContent(
@@ -131,7 +151,14 @@ export function extractCarryover(
           digest.assistantHeadChars,
           digest.assistantTailChars,
         ),
-      });
+      };
+
+      // 可选：附带完整的 tool_use + tool_result 块。
+      if (options?.includeToolCalls && turn.assistant.blocks) {
+        entry.blocks = extractToolBlocks(turn.assistant.blocks);
+      }
+
+      result.push(entry);
     }
   }
 
@@ -260,7 +287,9 @@ export async function rotateSession(
     };
     try {
       const conversation = readConversation(userId, currentSession.localId);
-      carryover = extractCarryover(conversation, carryoverTurns, digest);
+      carryover = extractCarryover(conversation, carryoverTurns, digest, {
+        includeToolCalls: config.session.carryoverIncludeToolCalls ?? false,
+      });
     } catch (err) {
       log.warn({ err, userId }, 'Failed to extract carryover from old session');
     }
@@ -301,7 +330,7 @@ export async function rotateSession(
  * @param userId - 用户 ID。
  * @param session - 当前活跃会话。
  */
-function startBackgroundPrep(userId: string, session: SessionMetadata): void {
+export function startBackgroundPrep(userId: string, session: SessionMetadata): void {
   const log = getLogger();
 
   log.info(
@@ -351,7 +380,7 @@ function startBackgroundPrep(userId: string, session: SessionMetadata): void {
  * @param bg - 后台轮转状态（必须为 ready）。
  * @returns 新会话的元数据。
  */
-function performInstantSwitch(userId: string, bg: BackgroundRotation): SessionMetadata {
+export function performInstantSwitch(userId: string, bg: BackgroundRotation): SessionMetadata {
   const log = getLogger();
   const currentSession = readActiveSession(userId);
 
@@ -374,7 +403,9 @@ function performInstantSwitch(userId: string, bg: BackgroundRotation): SessionMe
     assistantTailChars: config.session.carryoverAssistantTailChars ?? 200,
   };
   const allConversations = readConversation(userId, currentSession.localId);
-  const carryover = extractCarryover(allConversations, carryoverTurns, digest);
+  const carryover = extractCarryover(allConversations, carryoverTurns, digest, {
+    includeToolCalls: config.session.carryoverIncludeToolCalls ?? false,
+  });
 
   // 归档旧 session（使用预生成的摘要）。
   const archivedMetadata: SessionMetadata = {
@@ -642,6 +673,26 @@ export function getSessionHistoryForPrompt(userId: string): string {
       for (const entry of current.carryover) {
         const label = entry.role === 'user' ? 'User' : 'Assistant';
         lines.push(`**${label}**: ${entry.content}`);
+
+        // 渲染完整的 tool call / tool result 块（仅当 carryoverIncludeToolCalls 启用时存在）。
+        if (entry.blocks && entry.blocks.length > 0) {
+          for (const block of entry.blocks) {
+            if (block.type === 'tool_use') {
+              const inputStr = block.input ? JSON.stringify(block.input, null, 2) : '{}';
+              lines.push(`[Tool Use: ${block.toolName ?? 'unknown'}] (id: ${block.toolId ?? '?'})`);
+              lines.push('```json');
+              lines.push(inputStr);
+              lines.push('```');
+            } else if (block.type === 'tool_result') {
+              lines.push(`[Tool Result] (id: ${block.toolId ?? '?'})`);
+              if (block.text) {
+                lines.push('```');
+                lines.push(block.text);
+                lines.push('```');
+              }
+            }
+          }
+        }
       }
       lines.push('');
     }

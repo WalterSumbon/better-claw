@@ -87,6 +87,10 @@ const SessionConfigSchema = z.object({
   /** Carryover 中 agent 回复保留的结尾字符数。
    *  若回复总长度 ≤ headChars + tailChars，则保留全文不做 digest。 */
   carryoverAssistantTailChars: z.number().min(0).default(200),
+  /** Carryover 是否包含完整的 tool call 和 tool result。
+   *  启用后每轮 assistant 的 carryover 会附带 tool_use（含输入参数）和 tool_result（含执行结果）块，
+   *  帮助新 session 中的模型精确了解之前做了哪些操作及其结果。默认关闭。 */
+  carryoverIncludeToolCalls: z.boolean().default(false),
 });
 
 /** 重启权限配置。 */
@@ -300,6 +304,7 @@ export const AppConfigSchema = z.object({
     carryoverUserMaxChars: 500,
     carryoverAssistantHeadChars: 200,
     carryoverAssistantTailChars: 200,
+    carryoverIncludeToolCalls: false,
   })),
   /** 重启权限配置。 */
   restart: RestartConfigSchema.default(() => ({
