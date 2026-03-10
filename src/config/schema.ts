@@ -203,6 +203,12 @@ const SpeechToTextConfigSchema = z.object({
   language: z.string().optional(),
 });
 
+/** 消息信封配置。 */
+const MessageEnvelopeConfigSchema = z.object({
+  /** 是否在用户消息前附加平台和时间信息。默认开启。 */
+  enabled: z.boolean().default(true),
+});
+
 /** Webhook 配置。 */
 const WebhookConfigSchema = z.object({
   /** 监听端口。 */
@@ -288,6 +294,10 @@ export const AppConfigSchema = z.object({
   /** Skill 系统配置。 */
   skills: SkillsConfigSchema.default(() => ({
     paths: ['~/.claude/skills', './skills', '${userDir}/skills'],
+  })),
+  /** 消息信封配置（在用户消息前附加平台和时间戳信息）。 */
+  messageEnvelope: MessageEnvelopeConfigSchema.default(() => ({
+    enabled: true,
   })),
   /** Webhook 配置（可选，不配置则不启动 Webhook 服务器）。 */
   webhook: WebhookConfigSchema.optional(),

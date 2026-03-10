@@ -25,4 +25,6 @@ export interface UserProfile {
   createdAt: string;
   /** 所属权限组（不指定时使用 config.permissions.defaultGroup）。 */
   permissionGroup?: string;
+  /** 用户时区（IANA 格式，如 "Asia/Shanghai"）。未设置时使用系统时区。 */
+  timezone?: string;
 }

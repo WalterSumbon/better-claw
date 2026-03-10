@@ -6,6 +6,7 @@ import { resolveUserPermissions, resolvePathVariable } from './permissions.js';
 import { readProfile, getUserDir } from '../user/store.js';
 import { getConfig } from '../config/index.js';
 import { getUserSkillIndex, getRawSkillPaths, formatTopLevelListing } from '../skills/scanner.js';
+import { resolveTimezone, getUtcOffset, formatISOWithTimezone } from '../utils/timezone.js';
 
 /**
  * 为指定用户构建完整的 system prompt。
@@ -38,12 +39,15 @@ Because tool calls are invisible to the user:
 - If a tool returns content the user needs to see (e.g., memory reads, file contents, search results), you MUST reproduce the relevant content in your text response. The user cannot see tool outputs — if you don't paste it, they don't see it.`);
 
 
-  // 2. 当前时间。
-  sections.push(`Current date and time: ${new Date().toISOString()}`);
+  // 2. 当前时间（使用用户时区）。
+  const profile = readProfile(userId);
+  const userTz = resolveTimezone(profile?.timezone);
+  const utcOffset = getUtcOffset(userTz);
+  const now = new Date();
+  sections.push(`Current date and time: ${formatISOWithTimezone(now, userTz)}\nUser timezone: ${userTz} (${utcOffset})`);
 
   // 3. 当前用户信息（含权限组）。
   const user = getUser(userId);
-  const profile = readProfile(userId);
   const permConfig = getConfig().permissions;
   const groupName = profile?.permissionGroup ?? permConfig.defaultGroup;
   if (user) {
@@ -130,6 +134,9 @@ Your Bash commands run inside an OS-level sandbox. The \`dangerouslyDisableSandb
 - mcp__better-claw__session_new: Start a new session (archives the current one with a summary).
 - mcp__better-claw__session_list: List all sessions (active and archived).
 - mcp__better-claw__session_info: Get current session details.
+
+### User Profile Tools
+- mcp__better-claw__user_profile: View or update user profile settings (e.g., timezone). Use action="get" to view, action="set" with field="timezone" to update.
 
 ### Skill Set Tools
 - mcp__better-claw__load_skillset: Load a skill set or skill by path. Use this to explore and navigate the skill tree on demand.

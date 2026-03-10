@@ -11,6 +11,7 @@ import {
   cronDeleteTool,
 } from '../cron/tools.js';
 import { sendFileTool, restartTool } from './tools.js';
+import { userProfileTool } from './user-profile-tools.js';
 import {
   sessionNewTool,
   sessionListTool,
@@ -37,6 +38,7 @@ export function createAppMcpServer() {
       cronDeleteTool,
       sendFileTool,
       restartTool,
+      userProfileTool,
       sessionNewTool,
       sessionListTool,
       sessionInfoTool,

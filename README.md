@@ -146,6 +146,39 @@ Carryover 在新 session 中始终保留，直到该 session 本身被轮转。
 - `carryoverAssistantHeadChars` — agent 回复保留开头字符数，默认 200
 - `carryoverAssistantTailChars` — agent 回复保留结尾字符数，默认 200
 
+## 用户时区与消息信封
+
+### 用户时区
+
+每个用户可以通过 `user_profile` MCP 工具设置自己的 IANA 时区（如 `Asia/Shanghai`、`America/New_York`）。时区信息存储在用户的 `profile.json` 中。
+
+**时区影响范围：**
+- System prompt 中的当前时间显示（以用户时区展示，附带 UTC 偏移量）
+- 消息信封中的时间戳
+- Agent 感知到的用户当地时间
+
+**时区优先级：**
+1. 用户 profile 时区（最高，通过 `user_profile` 工具设置）
+2. 主机系统时区（最低，兜底默认值）
+
+### 消息信封
+
+消息信封（Message Envelope）在用户消息前自动附加平台来源和发送时间，帮助 agent 感知消息上下文。
+
+**格式：**
+```
+[telegram | 2026-03-10 09:43 Asia/Shanghai (UTC+8)]
+用户的消息内容
+```
+
+**配置：**
+```yaml
+messageEnvelope:
+  enabled: true   # 默认开启，设为 false 关闭
+```
+
+消息信封仅对用户消息生效，定时任务（cron）和 Webhook 触发的消息有各自独立的格式。
+
 ## Webhook 集成
 
 Better-Claw 提供 HTTP Webhook 接口，允许外部系统（如交易系统、监控系统）向用户发送消息通知。
@@ -345,6 +378,7 @@ Better-Claw 额外读取 project 和 local 层的 settings 文件，提取以下
 | `messagePush` | 中间消息推送 |
 | `speechToText` | 语音转文字配置 |
 | `permissionMode` | Agent 权限模式 |
+| `messageEnvelope` | 消息信封开关 |
 | Claude Code settings | `~/.claude/settings.json` 等三层文件同步刷新 |
 
 不可热重载（需要 `/restart`）：
@@ -461,6 +495,7 @@ better-claw/
 │   ├── mcp/                  # MCP 工具服务器
 │   ├── skills/               # Skill/Skillset 扫描、索引、MCP 工具
 │   ├── user/                 # 用户管理与数据存储
+│   ├── utils/                # 通用工具函数（时区处理等）
 │   └── logger/               # pino 日志（控制台 + 文件轮转）
 ├── skills/                   # 内置 skill 目录（SKILL.md 文件）
 ├── tests/                    # vitest 测试

@@ -18,6 +18,8 @@ import { initSkillIndex } from './skills/scanner.js';
 import { handleAdminCommand } from './core/admin-commands.js';
 import { startWebhookServer, stopWebhookServer } from './webhook/server.js';
 import type { WebhookHandler, WebhookNotifyRequest } from './webhook/types.js';
+import { readProfile } from './user/store.js';
+import { resolveTimezone, formatLocalTime, getUtcOffset } from './utils/timezone.js';
 
 /** 命令元信息。 */
 interface CommandDef {
@@ -92,6 +94,28 @@ function ensureDataDir(dataDir: string): boolean {
 
 /** 所有已启动的适配器。 */
 const adapters: MessageAdapter[] = [];
+
+/**
+ * 为用户消息添加信封（平台来源 + 发送时间）。
+ *
+ * 格式：`[platform | 2026-03-10 09:43 Asia/Shanghai (UTC+8)]\n原始消息`
+ *
+ * @param text - 原始消息文本。
+ * @param platform - 消息来源平台。
+ * @param userId - 用户 ID。
+ * @returns 带信封的消息文本。
+ */
+function wrapMessageEnvelope(text: string, platform: string, userId: string): string {
+  const config = getConfig();
+  if (!config.messageEnvelope.enabled) {
+    return text;
+  }
+  const profile = readProfile(userId);
+  const tz = resolveTimezone(profile?.timezone);
+  const localTime = formatLocalTime(new Date(), tz);
+  const offset = getUtcOffset(tz);
+  return `[${platform} | ${localTime} ${tz} (${offset})]\n${text}`;
+}
 
 /**
  * 处理入站消息的统一路由。
@@ -219,10 +243,10 @@ async function handleMessage(
     return;
   }
 
-  // 入队处理。
+  // 入队处理（附加消息信封）。
   enqueue({
     userId,
-    text: msg.text,
+    text: wrapMessageEnvelope(msg.text, msg.platform, userId),
     reply: (text: string) => adapter.sendText(msg.platformUserId, text),
     sendFile: (filePath, options) => adapter.sendFile(msg.platformUserId, filePath, options),
     showTyping: () => {

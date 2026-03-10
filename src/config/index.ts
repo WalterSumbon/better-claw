@@ -85,6 +85,7 @@ const HOT_RELOADABLE_KEYS = [
   'permissionMode',
   'skills',
   'systemPrompt',
+  'messageEnvelope',
 ] as const;
 
 /** 不可热重载的配置字段列表（需要重启）。 */
