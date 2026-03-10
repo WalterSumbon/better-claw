@@ -144,6 +144,30 @@
 
 ---
 
+## P6 - Agent 原生聊天客户端（本地部署）
+
+**问题**：当前通过 Telegram/钉钉等即时聊天软件适配 agent，但传统聊天软件的交互模型是为人与人沟通设计的，对 agent/multi-agent 场景束手束脚。
+
+**改进方案**：开发一个专为 agent 场景设计的、可本地部署的聊天客户端。
+
+- [ ] 便捷创建 agent 分身（一键创建不同角色/能力的 agent 实例）
+- [ ] 支持不同角色的 agent（如：研究员、编码助手、写作助手等，各自有独立的 system prompt 和工具集）
+- [ ] 拉群 / multi-agent 协作（多个 agent 在同一对话中协作完成任务）
+- [ ] 与 Better-Claw 后端深度集成（不再受第三方聊天平台 API 限制）
+- [ ] 本地部署，数据不经过第三方平台
+
+**与现有 TODO 的关系**：
+- 继承 P5（自部署 agent 前端）的愿景，但范围更大——不只是单 agent 聊天界面，而是 agent 协作平台
+- 可复用 Better-Claw 的 session/memory/skill 基础设施
+
+**待设计**：
+- 前端技术选型（Web/Electron/Tauri？）
+- Agent 间通信协议设计
+- Multi-agent 对话的 context 管理（各 agent 看到什么、共享什么）
+- 用户如何编排 agent 协作流程（可视化 vs 声明式配置）
+
+---
+
 ## 设计原则备忘
 
 来自两个项目的通用经验：

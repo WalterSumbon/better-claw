@@ -520,6 +520,38 @@ skills:
 #   # 常用值：zh（中文）, en（英文）, ja（日文）等。
 #   # language: "zh"
 
+# ----------------------------------------------------------------------------
+# Webhook 配置（可选）
+# ----------------------------------------------------------------------------
+# 启用后会启动一个 HTTP 服务器，接收外部系统的通知请求。
+# 可用于集成第三方系统（如交易系统、监控系统）向用户发送消息。
+# 不配置此段则不启动 Webhook 服务器。
+#
+# API 端点：POST /api/webhook/notify
+#
+# 请求参数（JSON）：
+#   - userId (必填)：目标用户 ID
+#   - platform (可选)：目标平台（telegram/dingtalk），默认用户最后绑定的平台
+#   - message (与 prompt 二选一)：直接发送的消息内容（不经过 Agent）
+#   - prompt (与 message 二选一)：Agent prompt（经过 AI 处理后回复）
+#   - data (可选)：附加数据，注入到 prompt 上下文
+#
+# 示例请求：
+#   curl -X POST http://localhost:3000/api/webhook/notify \
+#     -H "Content-Type: application/json" \
+#     -H "X-API-Key: your-secret-key" \
+#     -d '{"userId": "user_xxx", "message": "Hello from webhook!"}'
+#
+# webhook:
+#   # 监听端口。
+#   # 默认值：3000
+#   port: 3000
+#
+#   # API 密钥（用于验证请求）。
+#   # 请求时需在 Header 中携带 X-API-Key: <apiKey>。
+#   # 留空则不验证（仅限内网部署时使用）。
+#   # apiKey: "your-secret-key"
+
 # ============================================================================
 # Per-User MCP Servers（非配置文件项，仅供参考）
 # ============================================================================

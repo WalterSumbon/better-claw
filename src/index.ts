@@ -16,6 +16,8 @@ import type { MessageAdapter } from './adapter/interface.js';
 import type { CronTask } from './cron/types.js';
 import { initSkillIndex } from './skills/scanner.js';
 import { handleAdminCommand } from './core/admin-commands.js';
+import { startWebhookServer, stopWebhookServer } from './webhook/server.js';
+import type { WebhookHandler, WebhookNotifyRequest } from './webhook/types.js';
 
 /** 命令元信息。 */
 interface CommandDef {
@@ -249,15 +251,28 @@ function handleCronTrigger(userId: string, task: CronTask): void {
 
   // 构造广播回调：将回复文本发送到用户所有已绑定平台。
   const broadcastText = async (text: string) => {
+    log.info(
+      { userId, textLength: text.length, bindingsCount: profile.bindings.length, adaptersCount: adapters.length },
+      'broadcastText called for cron task',
+    );
     for (const binding of profile.bindings) {
       const adapter = adapters.find((a) => a.platform === binding.platform);
       if (adapter) {
+        log.info(
+          { platform: binding.platform, platformUserId: binding.platformUserId },
+          'Sending cron reply via adapter',
+        );
         await adapter.sendText(binding.platformUserId, text).catch((err) => {
           log.error(
             { err, platform: binding.platform, platformUserId: binding.platformUserId },
             'Failed to broadcast cron reply',
           );
         });
+      } else {
+        log.warn(
+          { platform: binding.platform, availableAdapters: adapters.map((a) => a.platform) },
+          'No adapter found for platform in cron broadcast',
+        );
       }
     }
   };
@@ -447,13 +462,64 @@ async function main(): Promise<void> {
     handleCronTrigger(userId, task);
   });
 
-  // 10. 重启后自动恢复对话。
+  // 10. 启动 Webhook 服务器（如果配置了）。
+  if (config.webhook) {
+    const webhookHandler: WebhookHandler = {
+      async notify(req: WebhookNotifyRequest) {
+        const profile = getUser(req.userId);
+        if (!profile) {
+          throw new Error('User not found');
+        }
+
+        // 确定目标平台：指定的 > 最后绑定的。
+        const targetPlatform = req.platform || profile.bindings[profile.bindings.length - 1]?.platform;
+        if (!targetPlatform) {
+          throw new Error('User has no platform bindings');
+        }
+
+        const binding = profile.bindings.find((b) => b.platform === targetPlatform);
+        if (!binding) {
+          throw new Error(`User not bound to platform: ${targetPlatform}`);
+        }
+
+        const adapter = adapters.find((a) => a.platform === targetPlatform);
+        if (!adapter) {
+          throw new Error(`Platform adapter not available: ${targetPlatform}`);
+        }
+
+        if (req.prompt) {
+          // 有 prompt，走 agent 处理。
+          const contextPrefix = req.data
+            ? `[Webhook 数据]\n${JSON.stringify(req.data, null, 2)}\n---\n`
+            : '';
+          enqueue({
+            userId: req.userId,
+            text: contextPrefix + req.prompt,
+            reply: (text: string) => adapter.sendText(binding.platformUserId, text),
+            sendFile: (filePath, options) => adapter.sendFile(binding.platformUserId, filePath, options),
+            showTyping: () => {
+              adapter.showTyping(binding.platformUserId).catch(() => {});
+            },
+            platform: 'webhook',
+          });
+        } else if (req.message) {
+          // 只有 message，直接发送（不经过 agent）。
+          await adapter.sendText(binding.platformUserId, req.message);
+        }
+      },
+    };
+
+    startWebhookServer(config.webhook.port, config.webhook.apiKey, webhookHandler);
+  }
+
+  // 11. 重启后自动恢复对话。
   handlePostRestart();
 
-  // 11. 优雅关闭。
+  // 12. 优雅关闭。
   const shutdown = async () => {
     log.info('Shutting down...');
     stopAllJobs();
+    await stopWebhookServer();
     for (const adapter of adapters) {
       await adapter.stop();
     }

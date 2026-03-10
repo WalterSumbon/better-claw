@@ -146,6 +146,82 @@ Carryover 在新 session 中始终保留，直到该 session 本身被轮转。
 - `carryoverAssistantHeadChars` — agent 回复保留开头字符数，默认 200
 - `carryoverAssistantTailChars` — agent 回复保留结尾字符数，默认 200
 
+## Webhook 集成
+
+Better-Claw 提供 HTTP Webhook 接口，允许外部系统（如交易系统、监控系统）向用户发送消息通知。
+
+### 配置
+
+在 config.yaml 中启用 Webhook：
+
+```yaml
+webhook:
+  port: 3001                           # 监听端口
+  apiKey: "your-secret-key"            # API 密钥（留空则不验证）
+```
+
+### API 端点
+
+```
+POST /api/webhook/notify
+```
+
+Headers:
+- Content-Type: application/json
+- X-API-Key: <apiKey>（如果配置了 apiKey）
+
+请求参数:
+
+- userId (string, 必填): 目标用户 ID
+- platform (string, 可选): 目标平台（telegram/dingtalk），默认用户最后绑定的平台
+- message (string, 与 prompt 二选一): 直接发送的消息内容（不经过 Agent）
+- prompt (string, 与 message 二选一): Agent prompt（经过 AI 处理后回复）
+- data (object, 可选): 附加数据，注入到 prompt 上下文
+
+### 使用示例
+
+直接发送消息（不经过 Agent）：
+
+```bash
+curl -X POST http://localhost:3001/api/webhook/notify \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret-key" \
+  -d '{
+    "userId": "user_xxx",
+    "message": "🔔 策略触发交易\n标的: 688256.SH\n动作: 买入\n价格: 1142.50"
+  }'
+```
+
+经过 Agent 处理后回复：
+
+```bash
+curl -X POST http://localhost:3001/api/webhook/notify \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret-key" \
+  -d '{
+    "userId": "user_xxx",
+    "prompt": "分析这笔交易并给出建议",
+    "data": {
+      "strategy": "AI芯片龙头",
+      "action": "buy",
+      "symbol": "688256.SH",
+      "price": 1142.50,
+      "quantity": 300
+    }
+  }'
+```
+
+### 响应
+
+成功：`{"success": true}`
+
+失败：`{"error": "错误信息"}`
+
+- 200: 成功
+- 400: 参数错误（缺少 userId 或 message/prompt）
+- 401: API Key 验证失败
+- 500: 服务器内部错误
+
 ## Skill 系统
 
 Better-Claw 支持树形 skill / skillset 管理，通过配置路径列表发现和组织 agent 技能。
@@ -276,6 +352,7 @@ Better-Claw 额外读取 project 和 local 层的 settings 文件，提取以下
 | 字段 | 原因 |
 |------|------|
 | `telegram` / `dingtalk` | 适配器连接已建立 |
+| `webhook` | HTTP 服务器已启动 |
 | `logging` | Logger 已初始化 |
 | `dataDir` | 路径已解析 |
 
@@ -380,6 +457,7 @@ better-claw/
 │   ├── adapter/              # 消息平台适配器（CLI、Telegram）
 │   ├── memory/               # 两层记忆系统（core + extended）
 │   ├── cron/                 # 定时任务调度与管理
+│   ├── webhook/              # HTTP Webhook 服务器
 │   ├── mcp/                  # MCP 工具服务器
 │   ├── skills/               # Skill/Skillset 扫描、索引、MCP 工具
 │   ├── user/                 # 用户管理与数据存储

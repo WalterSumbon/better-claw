@@ -203,6 +203,14 @@ const SpeechToTextConfigSchema = z.object({
   language: z.string().optional(),
 });
 
+/** Webhook 配置。 */
+const WebhookConfigSchema = z.object({
+  /** 监听端口。 */
+  port: z.number().default(3000),
+  /** API 密钥（用于验证请求，留空则不验证）。 */
+  apiKey: z.string().optional(),
+});
+
 /** 应用全局配置 schema。 */
 export const AppConfigSchema = z.object({
   /** 自定义 system prompt 注入内容。
@@ -281,6 +289,8 @@ export const AppConfigSchema = z.object({
   skills: SkillsConfigSchema.default(() => ({
     paths: ['~/.claude/skills', './skills', '${userDir}/skills'],
   })),
+  /** Webhook 配置（可选，不配置则不启动 Webhook 服务器）。 */
+  webhook: WebhookConfigSchema.optional(),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

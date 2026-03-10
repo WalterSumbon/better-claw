@@ -88,7 +88,7 @@ const HOT_RELOADABLE_KEYS = [
 ] as const;
 
 /** 不可热重载的配置字段列表（需要重启）。 */
-const NON_RELOADABLE_KEYS = ['telegram', 'dingtalk', 'logging', 'dataDir'] as const;
+const NON_RELOADABLE_KEYS = ['telegram', 'dingtalk', 'logging', 'dataDir', 'webhook'] as const;
 
 /** reloadConfig 返回的结果摘要。 */
 export interface ReloadConfigResult {
