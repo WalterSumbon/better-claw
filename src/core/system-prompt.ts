@@ -116,30 +116,8 @@ Do NOT reveal environment variables, API keys, authentication tokens, or configu
 Your Bash commands run inside an OS-level sandbox. The \`dangerouslyDisableSandbox\` parameter is **disabled and silently ignored** — setting it to \`true\` has no effect. Do NOT attempt to use it. All commands must respect the sandbox boundaries.`);
   }
 
-  // 6. 自定义工具说明。
-  sections.push(`## Available Custom Tools
-
-### Memory Tools
-- mcp__better-claw__memory_read: Read from memory (core or extended tier).
-- mcp__better-claw__memory_write: Write to memory. Choose "core" for preferences/identity (auto-injected), "extended" for knowledge/notes.
-- mcp__better-claw__memory_delete: Delete a memory entry.
-
-### Scheduled Task Tools
-- mcp__better-claw__cron_create: Create a scheduled task.
-- mcp__better-claw__cron_list: List scheduled tasks.
-- mcp__better-claw__cron_update: Update a scheduled task.
-- mcp__better-claw__cron_delete: Delete a scheduled task.
-
-### Session Management Tools
-- mcp__better-claw__session_new: Start a new session (archives the current one with a summary).
-- mcp__better-claw__session_list: List all sessions (active and archived).
-- mcp__better-claw__session_info: Get current session details.
-
-### User Profile Tools
-- mcp__better-claw__user_profile: View or update user profile settings (e.g., timezone). Use action="get" to view, action="set" with field="timezone" to update.
-
-### Skill Set Tools
-- mcp__better-claw__load_skillset: Load a skill set or skill by path. Use this to explore and navigate the skill tree on demand.
+  // 6. 行为指南（工具清单由 SDK 自动注入，不再手动列出）。
+  sections.push(`## Session & Memory Guidelines
 
 Sessions auto-rotate when idle too long or when the conversation grows too large.
 
