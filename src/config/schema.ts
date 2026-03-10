@@ -209,6 +209,23 @@ const MessageEnvelopeConfigSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+/** AgentBox 适配器配置。 */
+const AgentBoxConfigSchema = z.object({
+  /** AgentBox 服务器 WebSocket 地址（如 ws://localhost:3001）。 */
+  serverUrl: z.string().default('ws://localhost:3001'),
+  /** 注册为 agent 时使用的 ID。 */
+  agentId: z.string().default('better-claw'),
+  /** 注册为 agent 时的显示名称。 */
+  agentName: z.string().default('Better-Claw'),
+  /** 命令前缀（默认 "/"）。 */
+  commandPrefix: z.string().default('/'),
+  /** 断线重连间隔（毫秒）。 */
+  reconnectInterval: z.number().default(5000),
+  /** 发送 done 信号前的空闲等待时间（毫秒）。
+   *  在此期间如果有 showTyping 或 sendText 调用，计时器会重置。 */
+  doneTimeout: z.number().default(10_000),
+});
+
 /** Webhook 配置。 */
 const WebhookConfigSchema = z.object({
   /** 监听端口。 */
@@ -301,6 +318,8 @@ export const AppConfigSchema = z.object({
   })),
   /** Webhook 配置（可选，不配置则不启动 Webhook 服务器）。 */
   webhook: WebhookConfigSchema.optional(),
+  /** AgentBox 配置（可选，不配置则不启动 AgentBox 适配器）。 */
+  agentbox: AgentBoxConfigSchema.optional(),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

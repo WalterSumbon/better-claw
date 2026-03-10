@@ -510,6 +510,15 @@ async function main(): Promise<void> {
     log.info('DingTalk adapter started');
   }
 
+  // 8.5. 启动 AgentBox 适配器（如果配置了 serverUrl）。
+  if (config.agentbox) {
+    const { AgentBoxAdapter } = await import('./adapter/agentbox/adapter.js');
+    const abAdapter = await AgentBoxAdapter.create(config.agentbox);
+    adapters.push(abAdapter);
+    await abAdapter.start((msg) => handleMessage(msg, abAdapter));
+    log.info('AgentBox adapter started');
+  }
+
   // 9. 初始化定时任务调度器。
   initScheduler((userId: string, task: CronTask) => {
     handleCronTrigger(userId, task);
