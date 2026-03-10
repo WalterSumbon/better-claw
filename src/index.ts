@@ -16,6 +16,7 @@ import type { MessageAdapter } from './adapter/interface.js';
 import type { CronTask } from './cron/types.js';
 import { initSkillIndex } from './skills/scanner.js';
 import { handleAdminCommand } from './core/admin-commands.js';
+import { execSync } from 'child_process';
 import { startWebhookServer, stopWebhookServer } from './webhook/server.js';
 import type { WebhookHandler, WebhookNotifyRequest } from './webhook/types.js';
 import { readProfile } from './user/store.js';
@@ -412,12 +413,39 @@ function handlePostRestart(): void {
 /**
  * 启动应用。
  */
+/**
+ * 检查 Claude Code CLI 是否已安装且可用。
+ *
+ * Better-Claw 基于 Claude Agent SDK，依赖 Claude Code CLI。
+ * 若未安装，提前给出明确的错误提示并退出。
+ */
+function checkClaudeCodeInstalled(): void {
+  try {
+    const version = execSync('claude --version 2>&1', { encoding: 'utf-8' }).trim();
+    if (!version.includes('Claude Code')) {
+      console.error('[Better-Claw] Error: "claude" command found but does not appear to be Claude Code.');
+      console.error(`  Detected version string: ${version}`);
+      console.error('  Please install Claude Code: https://docs.anthropic.com/en/docs/claude-code');
+      process.exit(1);
+    }
+  } catch {
+    console.error('[Better-Claw] Error: Claude Code CLI ("claude") is not installed or not in PATH.');
+    console.error('  Better-Claw requires Claude Code to run.');
+    console.error('  Install it with: npm install -g @anthropic-ai/claude-code');
+    console.error('  More info: https://docs.anthropic.com/en/docs/claude-code');
+    process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
-  // 0. 解析 --data-dir 参数。
+  // 0. 检查 Claude Code CLI 依赖。
+  checkClaudeCodeInstalled();
+
+  // 0.1. 解析 --data-dir 参数。
   const dataDir = parseDataDir();
   const effectiveDataDir = dataDir ?? 'data';
 
-  // 0.1 确保数据目录就绪。
+  // 0.2 确保数据目录就绪。
   const isNew = ensureDataDir(effectiveDataDir);
   if (isNew) {
     const absDir = resolve(process.cwd(), effectiveDataDir);
