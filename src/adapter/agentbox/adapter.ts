@@ -43,6 +43,9 @@ interface ActiveRequest {
   conversationId: string;
   accumulatedContent: string;
   doneTimer: ReturnType<typeof setTimeout> | null;
+  /** done timer 是否已激活。仅在首次 sendText/showTyping 时才启动，
+   *  避免消息在队列排队期间就被提前 finish。 */
+  timerActivated: boolean;
 }
 
 export class AgentBoxAdapter implements MessageAdapter {
@@ -106,7 +109,8 @@ export class AgentBoxAdapter implements MessageAdapter {
     const state = this.activeRequests.get(platformUserId);
     if (!state || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
-    // 重置 done timer。
+    // 激活并重置 done timer。
+    state.timerActivated = true;
     this.resetDoneTimer(state);
 
     // 发送 text_delta：内容追加到 AgentBox 前端的流式显示。
@@ -130,9 +134,11 @@ export class AgentBoxAdapter implements MessageAdapter {
   }
 
   async showTyping(platformUserId: string): Promise<void> {
-    // showTyping 作为心跳，重置 done timer 防止提前完成。
+    // showTyping 作为心跳，激活并重置 done timer。
+    // 首次调用表示 agent 已开始处理此请求。
     const state = this.activeRequests.get(platformUserId);
     if (state) {
+      state.timerActivated = true;
       this.resetDoneTimer(state);
     }
   }
@@ -218,16 +224,16 @@ export class AgentBoxAdapter implements MessageAdapter {
     }
 
     // 注册活跃请求。使用 conversationId 作为 platformUserId。
+    // 注意：此时不启动 done timer。消息可能在队列中排队等待，
+    // 直到第一次 showTyping/sendText 调用才表示 agent 真正开始处理。
     const state: ActiveRequest = {
       requestId,
       conversationId,
       accumulatedContent: '',
       doneTimer: null,
+      timerActivated: false,
     };
     this.activeRequests.set(conversationId, state);
-
-    // 设置 done timer。
-    this.resetDoneTimer(state);
 
     // 构造 InboundMessage。
     const text = lastUserMsg.content;
