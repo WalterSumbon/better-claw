@@ -274,25 +274,29 @@ async function handleMessage(
   // 入队处理（附加消息信封）。
   // reply / sendFile / showTyping 回调动态查询 lastActiveAdapter，
   // 实现"回复发送给最后一个给 agent 发消息的平台"。
-  enqueue({
-    userId,
-    text: wrapMessageEnvelope(msg.text, msg.platform, userId),
-    reply: (text: string) => {
-      const active = lastActiveAdapter.get(userId);
-      if (active) return active.adapter.sendText(active.platformUserId, text);
-      return adapter.sendText(msg.platformUserId, text);
-    },
-    sendFile: (filePath, options) => {
-      const active = lastActiveAdapter.get(userId);
-      if (active) return active.adapter.sendFile(active.platformUserId, filePath, options);
-      return adapter.sendFile(msg.platformUserId, filePath, options);
-    },
-    showTyping: () => {
-      const active = lastActiveAdapter.get(userId);
-      if (active) active.adapter.showTyping(active.platformUserId).catch(() => {});
-      else adapter.showTyping(msg.platformUserId).catch(() => {});
-    },
-    platform: msg.platform,
+  // 通过 onComplete 回调等待处理完成，让 adapter 知道 agent 何时结束。
+  return new Promise<void>((resolve) => {
+    enqueue({
+      userId,
+      text: wrapMessageEnvelope(msg.text, msg.platform, userId),
+      reply: (text: string) => {
+        const active = lastActiveAdapter.get(userId);
+        if (active) return active.adapter.sendText(active.platformUserId, text);
+        return adapter.sendText(msg.platformUserId, text);
+      },
+      sendFile: (filePath, options) => {
+        const active = lastActiveAdapter.get(userId);
+        if (active) return active.adapter.sendFile(active.platformUserId, filePath, options);
+        return adapter.sendFile(msg.platformUserId, filePath, options);
+      },
+      showTyping: () => {
+        const active = lastActiveAdapter.get(userId);
+        if (active) active.adapter.showTyping(active.platformUserId).catch(() => {});
+        else adapter.showTyping(msg.platformUserId).catch(() => {});
+      },
+      platform: msg.platform,
+      onComplete: resolve,
+    });
   });
 }
 

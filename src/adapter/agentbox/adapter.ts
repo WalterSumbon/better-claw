@@ -315,6 +315,8 @@ export class AgentBoxAdapter implements MessageAdapter {
 
     try {
       await this.handler?.(inbound);
+      // Handler 完成后立即 finish，不再等 doneTimeout。
+      this.finishRequest(conversationId);
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       log.error({ err: errMsg, requestId, conversationId }, 'AgentBox: handler error');

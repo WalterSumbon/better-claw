@@ -281,3 +281,7 @@ env -u CLAUDECODE npx vitest run
 6. **Telegram webhook 残留导致 long polling 静默失败**：如果之前设置过 webhook，启动 long polling 前必须调用 `bot.api.deleteWebhook()` 清除，否则 bot 不会收到任何消息且没有错误提示。
 
 7. **遇到的错误都要记录到此文件的踩坑记录中**，帮助后续开发避免重复踩坑。
+
+8. **AgentBox 蓝点（streaming indicator）不消失**：根因是 `handleMessage` 调用 `enqueue()` 后立即返回（fire-and-forget），adapter 的 handler 在消息入队后就 resolve 了，而 agent 还在后台异步处理。原先的 `doneTimeout`（10s）机制作为补偿，导致消息完成后蓝点多停留 8-10 秒。修复方案：给 `QueuedMessage` 新增 `onComplete` 回调，`processNext` 在 `processMessage` 完成后调用它；`handleMessage` 用 `new Promise(resolve => enqueue({ ..., onComplete: resolve }))` 包装，让 handler 真正等到 agent 处理完成才返回；adapter 在 handler 返回后立即调 `finishRequest()`。注意 `mergeMessages` 需要组合所有被合并消息的 `onComplete` 回调。
+
+9. **禁止防御性修复**：调试时严禁采用"加超时兜底"、"静默吞错误"等治标不治本的偷懒做法。必须通过打 debug 日志、追踪事件流等方式找出问题的根本原因，然后针对性修复。

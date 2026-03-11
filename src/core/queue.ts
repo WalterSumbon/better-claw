@@ -18,6 +18,8 @@ export interface QueuedMessage {
   showTyping: () => void;
   /** 消息来源平台。 */
   platform: string;
+  /** 消息处理完成后的回调。用于通知调用方（如 adapter）agent 已完成处理。 */
+  onComplete?: () => void;
 }
 
 /** 每用户消息队列。 */
@@ -155,9 +157,18 @@ export function mergeMessages(messages: QueuedMessage[]): QueuedMessage {
 
   const mergedText = messages.map((m) => m.text).join('\n');
   const last = messages[messages.length - 1];
+
+  // 合并所有 onComplete 回调，确保每个调用方都能收到完成通知。
+  const allOnComplete = messages
+    .map((m) => m.onComplete)
+    .filter((cb): cb is () => void => !!cb);
+
   return {
     ...last,
     text: mergedText,
+    onComplete: allOnComplete.length > 0
+      ? () => allOnComplete.forEach((cb) => cb())
+      : undefined,
   };
 }
 
@@ -300,9 +311,16 @@ async function processNext(userId: string): Promise<void> {
     const rateLimited = await processMessage(message);
     if (rateLimited) {
       // 消息已放回队列，队列已暂停，不继续处理。
+      // 注意：不调 onComplete，消息会在 rate limit 解除后重新处理，届时再通知。
       processing.delete(userId);
       return;
     }
+    // 处理完成，通知调用方。
+    message.onComplete?.();
+  } catch (err) {
+    // 即使出错也要通知调用方，避免 handler 永远挂起。
+    message.onComplete?.();
+    throw err;
   } finally {
     // 递归处理下一条（仅在非 rate limit 暂停时）。
     if (!pausedUntil.has(userId)) {
