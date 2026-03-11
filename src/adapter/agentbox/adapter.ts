@@ -268,6 +268,16 @@ export class AgentBoxAdapter implements MessageAdapter {
       return;
     }
 
+    // 如果该 conversation 已有活跃请求，先完成旧请求，防止 timer 泄漏和状态冲突。
+    const existing = this.activeRequests.get(conversationId);
+    if (existing) {
+      log.warn(
+        { oldRequestId: existing.requestId, newRequestId: requestId, conversationId },
+        'AgentBox: overriding existing active request — finishing old one first',
+      );
+      this.finishRequest(conversationId);
+    }
+
     // 注册活跃请求。使用 conversationId 作为 platformUserId。
     // 注意：此时不启动 done timer。消息可能在队列中排队等待，
     // 直到第一次 showTyping/sendText 调用才表示 agent 真正开始处理。
