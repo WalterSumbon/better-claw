@@ -14,6 +14,7 @@ import { getLogger } from '../../logger/index.js';
 import type { MessageAdapter, SendFileOptions } from '../interface.js';
 import type { InboundMessage } from '../types.js';
 import type { AppConfig } from '../../config/schema.js';
+import { listUsers, bindPlatform, resolveUser } from '../../user/manager.js';
 
 // ---- Agent Protocol 类型（与 @agentbox/shared 对应） ----
 
@@ -28,6 +29,13 @@ interface AgentRequest {
   requestId: string;
   conversationId: string;
   messages: AgentBoxMessage[];
+  /** User info from AgentBox — includes loginToken for auto-binding. */
+  user?: {
+    id: string;
+    username: string;
+    displayName: string;
+    loginToken?: string;
+  };
 }
 
 interface AgentResponse {
@@ -184,6 +192,11 @@ export class AgentBoxAdapter implements MessageAdapter {
 
         if (data.type === 'registered') {
           log.info({ agentId: data.agentId }, 'AgentBox: registered successfully');
+          // Auto-provision all Better-Claw users on AgentBox after registration.
+          this.provisionAllUsers().catch((e) => {
+            const errMsg = e instanceof Error ? e.message : String(e);
+            log.warn({ err: errMsg }, 'AgentBox: auto-provision failed (non-fatal)');
+          });
           return;
         }
 
@@ -223,6 +236,7 @@ export class AgentBoxAdapter implements MessageAdapter {
   /**
    * 处理从 AgentBox 收到的 AgentRequest。
    * 提取最新用户消息，转为 InboundMessage，交给 handler 处理。
+   * 若请求中包含 user.loginToken，则自动绑定用户（免 /bind 手动操作）。
    */
   private async handleAgentRequest(request: AgentRequest): Promise<void> {
     const log = getLogger();
@@ -232,6 +246,18 @@ export class AgentBoxAdapter implements MessageAdapter {
       { requestId, conversationId, messageCount: messages.length },
       'AgentBox: received request',
     );
+
+    // Auto-bind: if the request includes a loginToken and the conversationId
+    // is not yet bound, automatically bind it to the matching Better-Claw user.
+    if (request.user?.loginToken && !resolveUser('agentbox', conversationId)) {
+      const profile = bindPlatform(request.user.loginToken, 'agentbox', conversationId);
+      if (profile) {
+        log.info(
+          { userId: profile.userId, conversationId },
+          'AgentBox: auto-bound user via loginToken',
+        );
+      }
+    }
 
     // 提取最新的用户消息。
     const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
@@ -288,6 +314,62 @@ export class AgentBoxAdapter implements MessageAdapter {
         error: { code: 'HANDLER_ERROR', message: errMsg },
       });
       this.finishRequest(conversationId);
+    }
+  }
+
+  /**
+   * 自动将所有 Better-Claw 用户预注册到 AgentBox 服务端。
+   * 通过 REST API POST /api/auth/provision 调用，使用 agentKey 认证。
+   * 这样用户可以直接用 Better-Claw token 登录 AgentBox 页面，无需手动 /bind。
+   */
+  private async provisionAllUsers(): Promise<void> {
+    const log = getLogger();
+
+    if (!this.agentKey) {
+      log.warn('AgentBox: cannot provision users without agentKey');
+      return;
+    }
+
+    // 将 ws:// 替换为 http:// 以调用 REST API
+    const httpBase = this.serverUrl
+      .replace(/^ws:\/\//, 'http://')
+      .replace(/^wss:\/\//, 'https://');
+
+    const users = listUsers();
+    let provisioned = 0;
+
+    for (const user of users) {
+      try {
+        const res = await fetch(`${httpBase}/api/auth/provision`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.agentKey}`,
+          },
+          body: JSON.stringify({
+            username: user.name.toLowerCase().replace(/[^a-z0-9_-]/g, '_').slice(0, 32) || user.userId,
+            displayName: user.name,
+            loginToken: user.token,
+          }),
+        });
+
+        if (res.ok) {
+          provisioned++;
+        } else {
+          const errBody = await res.json().catch(() => ({}));
+          log.warn(
+            { user: user.name, status: res.status, error: (errBody as any).error },
+            'AgentBox: provision user failed',
+          );
+        }
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        log.warn({ user: user.name, err: errMsg }, 'AgentBox: provision fetch error');
+      }
+    }
+
+    if (provisioned > 0) {
+      log.info({ total: users.length, provisioned }, 'AgentBox: users provisioned');
     }
   }
 
