@@ -241,6 +241,18 @@ const AgentBoxConfigSchema = z.object({
   doneTimeout: z.number().default(10_000),
 });
 
+/** AgentElegram 适配器配置。 */
+const AgentelegramConfigSchema = z.object({
+  /** agentelegram 服务器 WebSocket 地址（如 ws://localhost:4000/ws）。 */
+  serverUrl: z.string().default('ws://localhost:4000/ws'),
+  /** Agent API Key，由 agentelegram 的 register-agent 接口颁发（格式：ag-xxx）。 */
+  apiKey: z.string(),
+  /** 命令前缀（默认 "/"）。 */
+  commandPrefix: z.string().default('/'),
+  /** 断线重连间隔（毫秒）。 */
+  reconnectInterval: z.number().default(5000),
+});
+
 /** Webhook 配置。 */
 const WebhookConfigSchema = z.object({
   /** 监听端口。 */
@@ -340,6 +352,8 @@ export const AppConfigSchema = z.object({
   webhook: WebhookConfigSchema.optional(),
   /** AgentBox 配置（可选，不配置则不启动 AgentBox 适配器）。 */
   agentbox: AgentBoxConfigSchema.optional(),
+  /** AgentElegram 配置（可选，不配置则不启动 AgentElegram 适配器）。 */
+  agentelegram: AgentelegramConfigSchema.optional(),
   /** 传递给 SDK subprocess 的额外环境变量（键值对）。
    *  对所有用户（包括 admin）全局生效，在 process.env 之后追加。
    *  适合设置 SDK 行为参数，如 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE。 */

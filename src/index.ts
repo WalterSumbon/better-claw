@@ -562,6 +562,21 @@ async function main(): Promise<void> {
     log.info('AgentBox adapter started');
   }
 
+  // 8.6. 启动 AgentElegram 适配器（如果配置了 apiKey）。
+  if (config.agentelegram) {
+    const { AgentelegramAdapter } = await import('./adapter/agentelegram/adapter.js');
+    // 管理协议需要一个用户 ID 来读写 memory/cron 等。
+    // 使用第一个用户作为默认管理用户。
+    const mgmtUserResolver = () => {
+      const allUsers = listUsers();
+      return allUsers.length > 0 ? allUsers[0].userId : null;
+    };
+    const atAdapter = await AgentelegramAdapter.create(config.agentelegram, mgmtUserResolver);
+    adapters.push(atAdapter);
+    await atAdapter.start((msg) => handleMessage(msg, atAdapter));
+    log.info('AgentElegram adapter started');
+  }
+
   // 9. 初始化定时任务调度器。
   initScheduler((userId: string, task: CronTask) => {
     handleCronTrigger(userId, task);

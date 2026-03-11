@@ -121,8 +121,20 @@ export class AgentBoxAdapter implements MessageAdapter {
   }
 
   async sendText(platformUserId: string, text: string): Promise<void> {
+    const log = getLogger();
     const state = this.activeRequests.get(platformUserId);
-    if (!state || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!state || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      log.warn(
+        { platformUserId, hasState: !!state, wsOpen: this.ws?.readyState === WebSocket.OPEN },
+        'AgentBox: sendText skipped — no active request or WS closed',
+      );
+      return;
+    }
+
+    log.debug(
+      { platformUserId, requestId: state.requestId, textLen: text.length, accumulatedLen: state.accumulatedContent.length },
+      'AgentBox: sendText → routing to requestId',
+    );
 
     // 激活并重置 done timer。
     state.timerActivated = true;
@@ -272,8 +284,8 @@ export class AgentBoxAdapter implements MessageAdapter {
     const existing = this.activeRequests.get(conversationId);
     if (existing) {
       log.warn(
-        { oldRequestId: existing.requestId, newRequestId: requestId, conversationId },
-        'AgentBox: overriding existing active request — finishing old one first',
+        { oldRequestId: existing.requestId, newRequestId: requestId, conversationId, oldAccumulatedLen: existing.accumulatedContent.length },
+        'AgentBox: overriding existing active request — finishing old one first (accumulated content will be lost!)',
       );
       this.finishRequest(conversationId);
     }
@@ -316,16 +328,23 @@ export class AgentBoxAdapter implements MessageAdapter {
     try {
       await this.handler?.(inbound);
       // Handler 完成后立即 finish，不再等 doneTimeout。
-      this.finishRequest(conversationId);
+      // 仅当此请求仍是当前活跃请求时才 finish，避免误杀后续新请求。
+      const current = this.activeRequests.get(conversationId);
+      if (current?.requestId === requestId) {
+        this.finishRequest(conversationId);
+      }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       log.error({ err: errMsg, requestId, conversationId }, 'AgentBox: handler error');
-      this.send({
-        type: 'error',
-        requestId,
-        error: { code: 'HANDLER_ERROR', message: errMsg },
-      });
-      this.finishRequest(conversationId);
+      const current = this.activeRequests.get(conversationId);
+      if (current?.requestId === requestId) {
+        this.send({
+          type: 'error',
+          requestId,
+          error: { code: 'HANDLER_ERROR', message: errMsg },
+        });
+        this.finishRequest(conversationId);
+      }
     }
   }
 

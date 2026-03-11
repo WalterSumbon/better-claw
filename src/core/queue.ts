@@ -352,6 +352,10 @@ export function enqueue(message: QueuedMessage): void {
   );
 
   if (processing.has(message.userId)) {
+    log.info(
+      { userId: message.userId, queueLength: queues.get(message.userId)!.length, interactionMode: config.messagePush.interactionMode },
+      'Message enqueued while agent is busy — will wait in queue',
+    );
     // 用户正在处理中。中断模式下立即中断当前 agent。
     if (config.messagePush.interactionMode === 'interrupt') {
       log.info(
