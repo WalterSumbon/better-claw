@@ -9,7 +9,7 @@ import { enqueue, interrupt } from './core/queue.js';
 import { initScheduler, stopAllJobs } from './cron/scheduler.js';
 import { resetAgentSession } from './core/agent.js';
 import { agentContext } from './core/agent-context.js';
-import { rotateSession, getCurrentSessionInfo } from './core/session-manager.js';
+import { rotateSession, getCurrentSessionInfo, getBgRotation } from './core/session-manager.js';
 import { findPendingRestarts, deleteRestartMarker, writeRestartMarker } from './core/restart-marker.js';
 import type { InboundMessage } from './adapter/types.js';
 import type { MessageAdapter } from './adapter/interface.js';
@@ -21,38 +21,7 @@ import { startWebhookServer, stopWebhookServer } from './webhook/server.js';
 import type { WebhookHandler, WebhookNotifyRequest } from './webhook/types.js';
 import { readProfile } from './user/store.js';
 import { resolveTimezone, formatLocalTime, getUtcOffset } from './utils/timezone.js';
-
-/** 命令元信息。 */
-interface CommandDef {
-  name: string;
-  args?: string;
-  description: string;
-}
-
-/** 所有已注册的用户命令。 */
-const commands: CommandDef[] = [
-  { name: 'bind', args: '<token>', description: 'Link your platform account' },
-  { name: 'stop', description: 'Interrupt current response' },
-  { name: 'new', description: 'Start a new session' },
-  { name: 'restart', description: 'Restart the service' },
-  { name: 'admin', args: '<...>', description: 'Admin commands (admin only)' },
-  { name: 'help', description: 'Show available commands' },
-];
-
-/**
- * 根据命令注册表生成帮助文本。
- *
- * @param prefix - 命令前缀（如 `/` 或 `.`）。
- */
-function buildHelpText(prefix: string): string {
-  const entries = commands.map((cmd) => {
-    const usage = cmd.args ? `${cmd.name} ${cmd.args}` : cmd.name;
-    return { usage: `${prefix}${usage}`, desc: cmd.description };
-  });
-  const maxLen = Math.max(...entries.map((e) => e.usage.length));
-  const lines = entries.map((e) => `  ${e.usage.padEnd(maxLen)}  — ${e.desc}`);
-  return ['Available commands:', ...lines].join('\n');
-}
+import { buildHelpText } from './core/commands.js';
 
 /**
  * 从 process.argv 解析 --data-dir 参数。
@@ -208,6 +177,53 @@ async function handleMessage(
         }
         const result = handleAdminCommand(msg.commandArgs?.trim() ?? '');
         await adapter.sendText(msg.platformUserId, result);
+        return;
+      }
+      case 'context': {
+        const userId = resolveUser(msg.platform, msg.platformUserId);
+        if (userId) {
+          const sessionInfo = getCurrentSessionInfo(userId);
+          if (!sessionInfo) {
+            await adapter.sendText(msg.platformUserId, 'No active session.');
+          } else {
+            const config = getConfig();
+            const ctx = sessionInfo.contextTokens;
+            const win = sessionInfo.contextWindowTokens;
+            const pct = win > 0 ? (ctx / win * 100).toFixed(1) : 'N/A';
+            const softPct = (config.session.rotationContextRatio * 100).toFixed(0);
+            const forcePct = ((config.session.rotationForceRatio ?? 0.7) * 100).toFixed(0);
+
+            // Rotation status
+            const bgRot = getBgRotation(userId);
+            let rotationStatus: string;
+            if (bgRot) {
+              rotationStatus = bgRot.state === 'preparing'
+                ? '🔄 Preparing (generating summary…)'
+                : '✅ Ready (will switch on next message)';
+            } else {
+              const ratio = win > 0 ? ctx / win : 0;
+              if (ratio >= (config.session.rotationForceRatio ?? 0.7)) {
+                rotationStatus = '🔴 Force threshold reached';
+              } else if (ratio >= config.session.rotationContextRatio) {
+                rotationStatus = '🟡 Soft threshold reached';
+              } else {
+                rotationStatus = '⚪ Idle (no rotation pending)';
+              }
+            }
+
+            const lines = [
+              `📊 Context Usage`,
+              `Session: ${sessionInfo.localId}`,
+              `Tokens: ${ctx.toLocaleString()} / ${win > 0 ? win.toLocaleString() : '?'}`,
+              `Usage: ${pct}%`,
+              `Thresholds: soft ${softPct}% → hard ${forcePct}%`,
+              `Rotation: ${rotationStatus}`,
+              `Messages: ${sessionInfo.messageCount}, Turns: ${sessionInfo.totalTurns}`,
+              `Notifications: ${config.session.notifyContextEvents ? 'ON' : 'OFF'}`,
+            ];
+            await adapter.sendText(msg.platformUserId, lines.join('\n'));
+          }
+        }
         return;
       }
       case 'new': {

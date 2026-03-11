@@ -202,6 +202,15 @@ async function processMessage(message: QueuedMessage): Promise<boolean> {
         }
       },
       message.sendFile,
+      // notifyUser: 用于推送 context 事件通知（soft/hard 阈值、auto-compact、auto-rotation）及重启通知。
+      async (text: string) => {
+        log.info({ userId: message.userId, notification: text }, 'Context event notification');
+        try {
+          await message.reply(text);
+        } catch (err) {
+          log.error({ err, userId: message.userId }, 'Failed to send context event notification');
+        }
+      },
     );
     return false;
   } catch (err) {

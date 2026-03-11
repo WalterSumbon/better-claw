@@ -65,6 +65,7 @@ export class AgentBoxAdapter implements MessageAdapter {
 
   private constructor(
     private readonly serverUrl: string,
+    private readonly agentKey: string | undefined,
     private readonly agentId: string,
     private readonly agentName: string,
     private readonly reconnectInterval: number,
@@ -81,6 +82,7 @@ export class AgentBoxAdapter implements MessageAdapter {
   static async create(config: NonNullable<AppConfig['agentbox']>): Promise<AgentBoxAdapter> {
     return new AgentBoxAdapter(
       config.serverUrl,
+      config.agentKey,
       config.agentId,
       config.agentName,
       config.reconnectInterval,
@@ -154,8 +156,9 @@ export class AgentBoxAdapter implements MessageAdapter {
     if (!this.running) return;
 
     const log = getLogger();
-    const wsUrl = `${this.serverUrl}/agent`;
-    log.info({ url: wsUrl }, 'AgentBox: connecting...');
+    const keyParam = this.agentKey ? `?key=${encodeURIComponent(this.agentKey)}` : '';
+    const wsUrl = `${this.serverUrl}/agent${keyParam}`;
+    log.info({ url: this.serverUrl + '/agent' }, 'AgentBox: connecting...');
 
     this.ws = new WebSocket(wsUrl);
 
@@ -197,8 +200,8 @@ export class AgentBoxAdapter implements MessageAdapter {
       }
     });
 
-    this.ws.on('close', () => {
-      log.info('AgentBox: disconnected');
+    this.ws.on('close', (code: number, reason: Buffer) => {
+      log.info({ code, reason: reason.toString() }, 'AgentBox: disconnected');
       this.ws = null;
       if (this.running) {
         const delay = this.currentReconnectDelay;

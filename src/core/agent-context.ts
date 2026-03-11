@@ -7,6 +7,8 @@ export interface AgentContextStore {
   userId: string;
   /** 向用户发送文件的回调（在消息处理期间可用）。 */
   sendFile?: (filePath: string, options?: SendFileOptions) => Promise<void>;
+  /** 向用户发送通知文本的回调（返回 Promise 以支持 await）。 */
+  notifyUser?: (text: string) => Promise<void>;
 }
 
 /**

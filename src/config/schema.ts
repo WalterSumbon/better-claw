@@ -91,6 +91,14 @@ const SessionConfigSchema = z.object({
    *  启用后每轮 assistant 的 carryover 会附带 tool_use（含输入参数）和 tool_result（含执行结果）块，
    *  帮助新 session 中的模型精确了解之前做了哪些操作及其结果。默认关闭。 */
   carryoverIncludeToolCalls: z.boolean().default(false),
+  /** 是否向用户推送 context 相关事件通知。
+   *  开启后以下事件会向用户发送提示消息：
+   *  - 自动轮转（timeout / max_context）
+   *  - Soft 阈值触发（后台开始准备摘要）
+   *  - Hard 阈值触发（mid-query 强制轮转）
+   *  - SDK auto-compact
+   *  默认关闭。 */
+  notifyContextEvents: z.boolean().default(false),
 });
 
 /** 重启权限配置。 */
@@ -217,6 +225,9 @@ const MessageEnvelopeConfigSchema = z.object({
 const AgentBoxConfigSchema = z.object({
   /** AgentBox 服务器 WebSocket 地址（如 ws://localhost:3001）。 */
   serverUrl: z.string().default('ws://localhost:3001'),
+  /** Agent API Key，用于 WebSocket 连接认证。
+   *  对应 AgentBox 的 data/.agent-key 或 AGENTBOX_AGENT_KEY 环境变量。 */
+  agentKey: z.string().optional(),
   /** 注册为 agent 时使用的 ID。 */
   agentId: z.string().default('better-claw'),
   /** 注册为 agent 时的显示名称。 */
@@ -305,6 +316,7 @@ export const AppConfigSchema = z.object({
     carryoverAssistantHeadChars: 200,
     carryoverAssistantTailChars: 200,
     carryoverIncludeToolCalls: false,
+    notifyContextEvents: false,
   })),
   /** 重启权限配置。 */
   restart: RestartConfigSchema.default(() => ({

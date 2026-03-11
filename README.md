@@ -121,9 +121,38 @@ Better-Claw 提供两层记忆系统：
 - Context 过大（token 占比达到 `rotationContextRatio` / `rotationForceRatio`）
 - 手动（用户发送 `/new` 命令）
 
-**Carryover 机制**：不论何种原因触发轮转，系统都会从旧 session 最后 N 轮对话中提取 carryover，以规则化 digest 方式注入新 session 的 system prompt，确保模型不会遗忘轮转前的对话内容。
+### 两层阈值与 Mid-query 轮转
+
+系统使用 soft / force 两层阈值来控制轮转时机：
+
+- **Soft 阈值**（`rotationContextRatio`，默认 0.5）：达到后在后台预生成摘要，为即将到来的轮转做准备，不影响当前 query 执行。
+- **Force 阈值**（`rotationForceRatio`，默认 0.7）：达到后立即触发轮转，即使 agent 正在执行任务。
+
+检查时机：每条 assistant 消息（包括只含 tool_use 的消息）都会实时计算 context ratio。这意味着即使在一次复杂的 agent loop（多轮 tool call）中，context 从 40% 涨到 70%，系统也能在中途及时发现并触发轮转，不必等到下一条用户消息。
+
+### Mid-query 自动续接
+
+当轮转发生在 query 执行中途（mid-query rotation），系统会自动续接未完成的任务：
+
+1. 调用 `interrupt()` 中断当前 SDK query
+2. 保存已产生的部分对话到旧 session
+3. 创建新 session（携带 carryover）
+4. 重建 system prompt（包含 carryover 上下文）
+5. 自动注入续接 prompt，触发新的 `executeQuery()`
+
+续接 prompt 内容：*"上一个会话因 context 容量到达上限被自动轮转。请根据 system prompt 中 Carried Over from Previous Session 部分的上下文，继续完成之前未完成的任务。"*
+
+整个过程对用户透明——用户不会收到任何通知，agent 在新 session 中自动继续工作。
+
+与之对比，**常规轮转**（between-query）发生在两次 query 之间，此时不需要自动续接，因为用户的新消息本身就是新 query 的触发。
+
+### Carryover 机制
+
+不论何种原因触发轮转，系统都会从旧 session 最后 N 轮对话中提取 carryover，以规则化 digest 方式注入新 session 的 system prompt，确保模型不会遗忘轮转前的对话内容。
 
 一轮 = 1 条用户消息 + 该轮最后 1 条 agent 回复。agent 在循环中可能产生多条中间 assistant 消息，carryover 只保留每轮的最终回复。
+
+可选配置 `carryoverIncludeToolCalls`（默认 false）：启用后 carryover 会携带完整的 tool_use（含工具名 + 输入参数）和 tool_result 内容，而非仅保留文本。适用于需要精确续接上下文的场景，但会增加 system prompt 体积。
 
 Digest 策略（节省 token）：
 - 用户消息：超过 `carryoverUserMaxChars` 字符则截断，并注明总长度

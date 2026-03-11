@@ -8,6 +8,7 @@ import type { InboundMessage, Attachment } from '../types.js';
 import { splitMessage, markdownToTelegramHTML, stripHTMLTags } from './formatter.js';
 import { getLogger } from '../../logger/index.js';
 import { getConfig } from '../../config/index.js';
+import { commands } from '../../core/commands.js';
 import { ensureDir } from '../../utils/file.js';
 import { transcribeAudio } from '../../utils/transcribe.js';
 
@@ -675,12 +676,12 @@ export class TelegramAdapter implements MessageAdapter {
     });
 
     // 注册 Bot 命令菜单，让用户在输入框输入 / 时看到可用命令。
-    await this.bot.api.setMyCommands([
-      { command: 'new', description: '开始新会话（归档当前会话）' },
-      { command: 'stop', description: '中断当前 AI 响应' },
-      { command: 'restart', description: '重启服务' },
-      { command: 'bind', description: `绑定账号（${this.commandPrefix}bind <token>）` },
-    ]);
+    // 从共享命令注册表动态生成，避免硬编码导致不同步。
+    const botCommands = commands.map((cmd) => ({
+      command: cmd.name,
+      description: cmd.args ? `${cmd.description} (${cmd.args})` : cmd.description,
+    }));
+    await this.bot.api.setMyCommands(botCommands);
 
     // 清除可能存在的 webhook，确保 long polling 正常工作。
     await this.bot.api.deleteWebhook({ drop_pending_updates: false });

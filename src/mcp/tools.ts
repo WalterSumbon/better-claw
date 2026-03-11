@@ -39,9 +39,15 @@ After restart, the agent will automatically resume the conversation and notify t
       log.info({ userId }, 'Restart marker written');
     }
 
-    log.info('Restart requested via MCP tool');
+    log.info({ userId }, 'Restart requested via MCP tool');
+
+    // 向用户推送重启通知（与手动 /restart 命令行为一致，await 确保消息发出）。
+    if (store?.notifyUser) {
+      await store.notifyUser('🔄 Restarting...');
+    }
+
     // 延迟退出，确保当前响应能送达用户。外层进程管理器负责重新拉起。
-    setTimeout(() => process.kill(process.pid, 'SIGTERM'), 1500);
+    setTimeout(() => process.kill(process.pid, 'SIGTERM'), 500);
     return {
       content: [
         { type: 'text' as const, text: 'Service restart scheduled. The process will exit shortly and be restarted by the process manager. A restart marker has been written — the agent will auto-resume the conversation after restart.' },

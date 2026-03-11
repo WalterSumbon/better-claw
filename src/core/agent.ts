@@ -16,6 +16,10 @@ import type { ConversationBlock } from './session-store.js';
 import {
   ensureActiveSession,
   updateSessionAfterQuery,
+  startBackgroundPrep,
+  performInstantSwitch,
+  getBgRotation,
+  rotateSession,
 } from './session-manager.js';
 import { getUserWorkspacePath, readUserMcpServers } from '../user/store.js';
 import { buildCanUseTool, buildSandboxSettings, resolveUserPermissions } from './permissions.js';
@@ -59,6 +63,14 @@ export class AgentInterruptedError extends Error {
   constructor() {
     super('Agent interrupted by user');
     this.name = 'AgentInterruptedError';
+  }
+}
+
+/** Agent loop 中途达到 force context ratio 阈值时抛出，触发 mid-query 轮转。 */
+class MidQueryRotationNeeded extends Error {
+  constructor() {
+    super('Mid-query rotation needed');
+    this.name = 'MidQueryRotationNeeded';
   }
 }
 
@@ -214,6 +226,7 @@ export async function sendToAgent(
   message: string,
   onMessage: (msg: SDKMessage) => void,
   sendFile?: (filePath: string, options?: SendFileOptions) => Promise<void>,
+  notifyUser?: (text: string) => Promise<void>,
 ): Promise<SDKResultMessage> {
   const log = getLogger();
   const config = getConfig();
@@ -226,6 +239,11 @@ export async function sendToAgent(
       { userId, reason, newLocalId: activeSession.localId },
       'Session auto-rotated before query',
     );
+    // 向用户推送自动轮转通知（如果配置启用）。
+    if (config.session.notifyContextEvents && notifyUser) {
+      const reasonLabel = reason === 'timeout' ? '闲置超时' : 'context 容量达到阈值';
+      notifyUser(`🔄 Session 已自动轮转（${reasonLabel}）→ ${activeSession.localId}`);
+    }
   }
 
   // 同步内存状态。
@@ -331,15 +349,21 @@ export async function sendToAgent(
    * @param queryOptions - 传给 SDK query() 的选项。
    * @returns 最终结果消息。
    */
-  async function executeQuery(queryOptions: typeof options): Promise<SDKResultMessage> {
-    const q = query({ prompt: message, options: queryOptions });
+  async function executeQuery(prompt: string, queryOptions: typeof options): Promise<SDKResultMessage> {
+    const q = query({ prompt, options: queryOptions });
     session.activeQuery = q;
 
     let result: SDKResultMessage | null = null;
+    let midQueryRotationTriggered = false;
+    let softRotationStarted = false;
 
     // Rate limit 检测状态。
     let hitRateLimit = false;
     let lastResetsAt: number | null = null;
+
+    // 从持久化 session 读取 contextWindowTokens（用于中间 ratio 检查）。
+    const persistedSession = readActiveSession(userId);
+    const ctxWindow = persistedSession?.contextWindowTokens ?? 0;
 
     try {
       for await (const msg of q) {
@@ -414,6 +438,43 @@ export async function sendToAgent(
             }
           }
 
+          // ── Mid-query context ratio 检查 ──
+          // 每条 assistant 消息（包括只有 tool_use 的）都会更新 lastInputTokens，
+          // 在此检查 ratio 以便在 agent loop 中间触发轮转。
+          if (lastInputTokens > 0 && ctxWindow > 0) {
+            const contextRatio = lastInputTokens / ctxWindow;
+            const softRatio = config.session.rotationContextRatio;
+            const forceRatio = config.session.rotationForceRatio ?? 0.7;
+
+            if (contextRatio >= forceRatio) {
+              log.info(
+                { userId, contextRatio: contextRatio.toFixed(3), forceRatio },
+                'Mid-query force rotation triggered',
+              );
+              midQueryRotationTriggered = true;
+              // 通知用户 hard 阈值触发（通知在轮转完成后由外层发送）。
+              await q.interrupt();
+              break;
+            } else if (contextRatio >= softRatio && !softRotationStarted && !getBgRotation(userId)) {
+              // Soft 阈值：启动后台准备。先更新持久化 session 的 contextTokens 以反映真实值。
+              const currentMeta = readActiveSession(userId);
+              if (currentMeta) {
+                currentMeta.contextTokens = lastInputTokens;
+                writeActiveSession(userId, currentMeta);
+                startBackgroundPrep(userId, currentMeta);
+                softRotationStarted = true;
+                log.info(
+                  { userId, contextRatio: contextRatio.toFixed(3), softRatio },
+                  'Mid-query soft rotation prep started',
+                );
+                // 向用户推送 soft 阈值通知。
+                if (config.session.notifyContextEvents && notifyUser) {
+                  notifyUser(`⚠️ Context 已达 ${(contextRatio * 100).toFixed(1)}%（soft 阈值 ${(softRatio * 100).toFixed(0)}%），后台开始准备轮转摘要`);
+                }
+              }
+            }
+          }
+
           // 采集 assistant 内容块（thinking / text / tool_use）。
           const contentBlocks = assistantMsg.message?.content;
           if (contentBlocks) {
@@ -479,6 +540,12 @@ export async function sendToAgent(
               },
               'SDK compact boundary detected',
             );
+            // 向用户推送 auto-compact 通知。
+            if (config.session.notifyContextEvents && notifyUser) {
+              const preTokens = sysMsg.compact_metadata?.pre_tokens;
+              const trigger = sysMsg.compact_metadata?.trigger ?? 'unknown';
+              notifyUser(`🗜️ SDK auto-compact 触发（trigger: ${trigger}${preTokens ? `, pre: ${preTokens.toLocaleString()} tokens` : ''}）`);
+            }
           }
           if (sysMsg.subtype === 'status' && sysMsg.status === 'compacting') {
             log.info({ userId, localSessionId: session.localSessionId }, 'SDK auto-compact in progress');
@@ -495,10 +562,16 @@ export async function sendToAgent(
       session.activeQuery = null;
     }
 
+    // 用户主动中断优先于 mid-query 轮转。
+    if (session.interrupted) {
+      throw new AgentInterruptedError();
+    }
+
+    if (midQueryRotationTriggered) {
+      throw new MidQueryRotationNeeded();
+    }
+
     if (!result) {
-      if (session.interrupted) {
-        throw new AgentInterruptedError();
-      }
       throw new Error('Agent query completed without result message');
     }
 
@@ -510,42 +583,98 @@ export async function sendToAgent(
     return result;
   }
 
-  const resultMessage = await agentContext.run({ userId, sendFile }, async () => {
-    try {
-      return await executeQuery(options);
-    } catch (err) {
-      // 用户主动中断，不重试。
-      if (err instanceof AgentInterruptedError) {
+  let currentPrompt = message;
+  let currentSessionLocalId = activeSession.localId;
+
+  const resultMessage = await agentContext.run({ userId, sendFile, notifyUser }, async () => {
+    while (true) {
+      try {
+        try {
+          return await executeQuery(currentPrompt, options);
+        } catch (err) {
+          if (err instanceof AgentInterruptedError || err instanceof MidQueryRotationNeeded) throw err;
+          // 如果使用了 resume 且进程崩溃，清除 session ID 后重试（不 resume）。
+          if (options.resume) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            log.warn(
+              { userId, sdkSessionId: options.resume, error: errMsg, stderr: lastStderr.trim() || undefined },
+              'Agent query failed with resume, retrying without resume',
+            );
+            lastStderr = '';
+
+            // 清除内存和持久化的 SDK session ID。
+            session.sdkSessionId = null;
+            const currentActive = readActiveSession(userId);
+            if (currentActive) {
+              currentActive.sdkSessionId = null;
+              currentActive.updatedAt = new Date().toISOString();
+              writeActiveSession(userId, currentActive);
+            }
+
+            const retryOptions = { ...options };
+            delete retryOptions.resume;
+            return await executeQuery(currentPrompt, retryOptions);
+          }
+          // 非 resume 场景，附加 stderr 后抛出。
+          if (lastStderr.trim()) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            log.error({ userId, error: errMsg, stderr: lastStderr.trim() }, 'Agent query failed');
+          }
+          throw err;
+        }
+      } catch (err) {
+        if (err instanceof MidQueryRotationNeeded) {
+          // ── Mid-query 轮转：保存部分对话 → 轮转 → 续接 ──
+          const partialResponse = collectedBlocks
+            .filter(b => b.type === 'text')
+            .map(b => b.text)
+            .join('\n') || '[Task interrupted for session rotation]';
+
+          const currentActive = readActiveSession(userId);
+          updateSessionAfterQuery(userId, currentSessionLocalId, currentPrompt, partialResponse, {
+            contextTokens: lastInputTokens,
+            contextWindowTokens: currentActive?.contextWindowTokens ?? 0,
+          }, [...collectedBlocks]);
+
+          // 执行轮转（优先使用后台准备的摘要，否则同步轮转）。
+          const bg = getBgRotation(userId);
+          let newSession;
+          if (bg) {
+            if (bg.state === 'preparing') await bg.promise;
+            newSession = performInstantSwitch(userId, bg);
+          } else {
+            newSession = await rotateSession(userId, 'max_context');
+          }
+
+          // 更新内存状态。
+          session.localSessionId = newSession.localId;
+          session.sdkSessionId = null;
+          currentSessionLocalId = newSession.localId;
+
+          // 重置采集状态。
+          collectedBlocks.length = 0;
+          lastInputTokens = 0;
+          lastStderr = '';
+
+          // 更新 query 选项：新 system prompt、不 resume。
+          options.systemPrompt = buildSystemPrompt(userId);
+          delete options.resume;
+
+          // 续接提示。
+          currentPrompt = '上一个会话因 context 容量到达上限被自动轮转。请根据 system prompt 中 "Carried Over from Previous Session" 部分的上下文，继续完成之前未完成的任务。不要解释发生了什么，直接继续工作。';
+
+          log.info(
+            { userId, newLocalId: newSession.localId },
+            'Mid-query rotation completed, continuing with new session',
+          );
+          // 向用户推送 mid-query 强制轮转通知。
+          if (config.session.notifyContextEvents && notifyUser) {
+            notifyUser(`🔄 Context 达到 hard 阈值，已自动轮转 → ${newSession.localId}，任务继续执行中...`);
+          }
+          continue;
+        }
         throw err;
       }
-      // 如果使用了 resume 且进程崩溃，清除 session ID 后重试（不 resume）。
-      if (options.resume) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        log.warn(
-          { userId, sdkSessionId: options.resume, error: errMsg, stderr: lastStderr.trim() || undefined },
-          'Agent query failed with resume, retrying without resume',
-        );
-        lastStderr = '';
-
-        // 清除内存和持久化的 SDK session ID。
-        session.sdkSessionId = null;
-        const currentActive = readActiveSession(userId);
-        if (currentActive) {
-          currentActive.sdkSessionId = null;
-          currentActive.updatedAt = new Date().toISOString();
-          writeActiveSession(userId, currentActive);
-        }
-
-        const retryOptions = { ...options };
-        delete retryOptions.resume;
-        return await executeQuery(retryOptions);
-      }
-      // 非 resume 场景，附加 stderr 后抛出。
-      if (lastStderr.trim()) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        log.error({ userId, error: errMsg, stderr: lastStderr.trim() }, 'Agent query failed');
-      }
-      throw err;
     }
   });
 
@@ -569,7 +698,7 @@ export async function sendToAgent(
     }
   }
 
-  updateSessionAfterQuery(userId, activeSession.localId, message, assistantResponse, {
+  updateSessionAfterQuery(userId, currentSessionLocalId, currentPrompt, assistantResponse, {
     costUsd: resultMessage.total_cost_usd,
     turns: resultMessage.num_turns,
     durationMs: resultMessage.duration_ms,
