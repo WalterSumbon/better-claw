@@ -38,11 +38,13 @@ export type QueueStrategy = 'sequential' | 'merge' | 'interrupt';
  * @param userId - 用户 ID。
  * @param args - 指令参数文本。
  * @param reply - 发送回复的回调（同步调用，内部 emit msg:out）。
+ * @param payload - 原始入站消息 payload（可获取 source 等上下文信息）。
  */
 export type CommandHandler = (
   userId: string,
   args: string,
   reply: (text: string) => void,
+  payload: MsgInPayload,
 ) => Promise<void>;
 
 /** BusAgent 构造选项。 */
@@ -79,6 +81,9 @@ export class BusAgent {
   private processingMessage = false;
   private processingCommand = false;
 
+  /** 当前正在执行的原始 payload（用于 rate limit 重入队，避免双重 envelope）。 */
+  private currentPayloads: MsgInPayload[] = [];
+
   // ---- Rate limit ----
   private pausedUntil: number | null = null;
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -90,12 +95,12 @@ export class BusAgent {
     this.queueStrategy = options.queueStrategy ?? 'sequential';
 
     // 注册内建指令。
-    this.registerCommand('stop', async (uid, _args, reply) => {
+    this.registerCommand('stop', async (uid, _args, reply, _payload) => {
       await interruptAgent(uid);
       reply('⏹️ Stopped.');
     });
 
-    this.registerCommand('new', async (uid, _args, reply) => {
+    this.registerCommand('new', async (uid, _args, reply, _payload) => {
       await interruptAgent(uid);
       resetAgentSession(uid);
       reply('🔄 New session created.');
@@ -173,7 +178,7 @@ export class BusAgent {
             target,
             text,
           });
-        });
+        }, cmd.payload);
       } catch (err) {
         log.error({ err, userId: this.userId, command: cmd.name }, 'Command handler error');
         this.bus.emit('msg:out', {
@@ -214,6 +219,7 @@ export class BusAgent {
       ) {
         // merge / interrupt：合并所有积压消息。
         const payloads = this.messageQueue.splice(0);
+        this.currentPayloads = payloads;
         text = payloads.map((p) => this.buildEnvelope(p)).join('\n');
         source = payloads[payloads.length - 1].source;
         files = payloads.flatMap((p) => p.files ?? []);
@@ -221,6 +227,7 @@ export class BusAgent {
       } else {
         // sequential 或只有 1 条消息。
         const payload = this.messageQueue.shift()!;
+        this.currentPayloads = [payload];
         text = this.buildEnvelope(payload);
         source = payload.source;
         files = payload.files;
@@ -234,7 +241,7 @@ export class BusAgent {
         if (err instanceof AgentInterruptedError) {
           log.info({ userId: this.userId }, 'Agent interrupted by user');
         } else if (err instanceof RateLimitError) {
-          this.handleRateLimit(err, text, source);
+          this.handleRateLimit(err);
           break;
         } else {
           log.error({ err, userId: this.userId }, 'Query execution error');
@@ -367,22 +374,18 @@ export class BusAgent {
 
   /**
    * 处理 rate limit：暂停队列、通知用户、定时恢复。
+   * 使用 this.currentPayloads（原始 payload）重入队，避免双重 envelope 包装。
    */
-  private handleRateLimit(err: RateLimitError, text: string, source: string): void {
+  private handleRateLimit(err: RateLimitError): void {
     const log = getLogger();
     const resumeAt = err.resetsAt ?? Date.now() + DEFAULT_RATE_LIMIT_WAIT_MS;
 
     this.pausedUntil = resumeAt;
 
-    // 将消息放回队列头部，恢复后重新执行。
-    // 注意：text 已经是 enveloped 的，重新入队时包装为 MsgInPayload。
-    // 但因为 drainMessageQueue 会重新 buildEnvelope，这里需要存储原始 payload。
-    // 简化处理：创建一个标记过的 payload，drainMessageQueue 直接使用 text。
-    this.messageQueue.unshift({
-      userId: this.userId,
-      source,
-      text, // 已 enveloped 的文本；buildEnvelope 会检测配置决定是否再包装
-    });
+    // 将原始 payload 放回队列头部，恢复后由 drainMessageQueue 重新 buildEnvelope。
+    this.messageQueue.unshift(...this.currentPayloads);
+
+    const source = this.currentPayloads[this.currentPayloads.length - 1]?.source ?? 'unknown';
 
     // 通知用户。
     const resetTime = new Date(resumeAt).toLocaleTimeString('en-US', {
@@ -411,6 +414,18 @@ export class BusAgent {
   /** 外部中断当前 query（用于 BusAgentManager 等）。 */
   abortCurrentQuery(): void {
     interruptAgent(this.userId).catch(() => {});
+  }
+
+  /** 清理资源：取消定时器、清空队列。 */
+  dispose(): void {
+    if (this.resumeTimer) {
+      clearTimeout(this.resumeTimer);
+      this.resumeTimer = null;
+    }
+    this.pausedUntil = null;
+    this.messageQueue.length = 0;
+    this.commandQueue.length = 0;
+    this.currentPayloads = [];
   }
 }
 
@@ -451,13 +466,17 @@ export class BusAgentManager {
   }
 
   /**
-   * 停止管理器，取消所有监听。
+   * 停止管理器，取消所有监听，清理所有 agent 资源。
    */
   stop(): void {
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;
     }
+    for (const agent of this.agents.values()) {
+      agent.dispose();
+    }
+    this.agents.clear();
   }
 
   private handleMsgIn(payload: MsgInPayload): void {
@@ -468,7 +487,10 @@ export class BusAgentManager {
   private getOrCreateAgent(userId: string): BusAgent {
     let agent = this.agents.get(userId);
     if (!agent) {
-      agent = new BusAgent(userId, this.bus!, this.options);
+      if (!this.bus) {
+        throw new Error('BusAgentManager not started — call start(bus) first');
+      }
+      agent = new BusAgent(userId, this.bus, this.options);
       // 注册全局指令处理器。
       for (const [name, handler] of this.globalCommandHandlers) {
         agent.registerCommand(name, handler);

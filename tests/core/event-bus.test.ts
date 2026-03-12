@@ -261,6 +261,41 @@ describe('EventBus', () => {
       expect(lateHandler).toHaveBeenCalled();
     });
 
+    it('should catch async listener rejection without crashing', async () => {
+      // 传入一个 async listener（应该被防御性捕获）。
+      const asyncHandler = vi.fn(async () => {
+        throw new Error('async boom');
+      });
+
+      bus.on('msg:in', asyncHandler as any);
+
+      // emit 本身不应该抛出。
+      expect(() => {
+        bus.emit('msg:in', { userId: 'u1', source: 'cli' });
+      }).not.toThrow();
+
+      expect(asyncHandler).toHaveBeenCalledOnce();
+
+      // 等待 promise rejection 被捕获。
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      // 如果没有被捕获，Node 会报 unhandled rejection，测试框架会 fail。
+    });
+
+    it('should catch async onAny listener rejection without crashing', async () => {
+      const asyncAnyHandler = vi.fn(async () => {
+        throw new Error('async any boom');
+      });
+
+      bus.onAny(asyncAnyHandler as any);
+
+      expect(() => {
+        bus.emit('msg:in', { userId: 'u1', source: 'cli' });
+      }).not.toThrow();
+
+      expect(asyncAnyHandler).toHaveBeenCalledOnce();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
     it('should handle streaming msg:out payloads correctly', () => {
       const chunks: MsgOutPayload[] = [];
       bus.on('msg:out', (payload) => chunks.push(payload));
