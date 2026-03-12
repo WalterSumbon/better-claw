@@ -242,6 +242,15 @@ export class AdapterBridge {
       clearInterval(interval);
       this.typingIntervals.delete(key);
     }
+
+    // 通知适配器 agent 处理完成（用于流式协议的完成信号）。
+    // 仅当消息来源是本平台时才触发（广播源不需要，因为没有对应的活跃请求/流式状态）。
+    if (this.adapter.onAgentDone && payload.target === this.adapter.platform) {
+      const platformUserId = this.resolvePlatformUserId(payload.userId);
+      if (platformUserId) {
+        this.adapter.onAgentDone(platformUserId);
+      }
+    }
   }
 
   // ---- 辅助方法 ----

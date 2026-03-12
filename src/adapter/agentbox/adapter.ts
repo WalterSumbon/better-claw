@@ -4,10 +4,11 @@
  * 将 Better-Claw 作为 AI Agent 接入 AgentBox 聊天平台。
  * 通过 WebSocket 连接 AgentBox 服务端的 /agent 端点，遵循 Agent Protocol。
  *
- * 消息流：
+ * 消息流（EventBus 架构）：
  *   AgentBox 用户发消息 → AgentBox Server → AgentRequest → 本适配器
- *   → InboundMessage → handleMessage → enqueue → agent 处理
- *   → sendText() → AgentResponse (text_delta + done) → AgentBox Server → 用户
+ *   → InboundMessage → AdapterBridge → bus.emit('msg:in') → BusAgent → agent 处理
+ *   → bus.emit('msg:out') → AdapterBridge → sendText() → AgentResponse (text_delta) → 用户
+ *   → agent:idle → AdapterBridge → onAgentDone() → finishRequest() → done → 用户
  */
 import WebSocket from 'ws';
 import { getLogger } from '../../logger/index.js';
@@ -170,6 +171,14 @@ export class AgentBoxAdapter implements MessageAdapter {
     }
   }
 
+  /**
+   * Agent 处理完成回调。由 AdapterBridge 在 agent:idle 时调用。
+   * 发送 done 信号完成当前请求。
+   */
+  onAgentDone(platformUserId: string): void {
+    this.finishRequest(platformUserId);
+  }
+
   // ---- Private ----
 
   private connect(): void {
@@ -325,15 +334,10 @@ export class AgentBoxAdapter implements MessageAdapter {
       commandArgs,
     };
 
-    try {
-      await this.handler?.(inbound);
-      // Handler 完成后立即 finish，不再等 doneTimeout。
-      // 仅当此请求仍是当前活跃请求时才 finish，避免误杀后续新请求。
-      const current = this.activeRequests.get(conversationId);
-      if (current?.requestId === requestId) {
-        this.finishRequest(conversationId);
-      }
-    } catch (e) {
+    // Fire-and-forget：EventBus 架构下 handler 立即返回（仅 emit msg:in）。
+    // Agent 完成由 AdapterBridge 通过 agent:idle → onAgentDone 通知。
+    // doneTimeout 作为兜底，防止 onAgentDone 未触发时请求泄漏。
+    this.handler?.(inbound).catch((e) => {
       const errMsg = e instanceof Error ? e.message : String(e);
       log.error({ err: errMsg, requestId, conversationId }, 'AgentBox: handler error');
       const current = this.activeRequests.get(conversationId);
@@ -345,7 +349,7 @@ export class AgentBoxAdapter implements MessageAdapter {
         });
         this.finishRequest(conversationId);
       }
-    }
+    });
   }
 
   /**
