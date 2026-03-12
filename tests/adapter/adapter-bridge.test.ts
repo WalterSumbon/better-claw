@@ -340,14 +340,16 @@ describe('AdapterBridge', () => {
   // ---- Streaming 去重 ----
 
   describe('streaming deduplication', () => {
-    it('should forward streaming messages', async () => {
+    // ---- 非流式适配器（如 Telegram）：忽略 streaming 事件，只发 complete ----
+
+    it('should ignore streaming messages for non-streaming adapter', async () => {
       resolveUserMock.mockReturnValue('user1');
       await adapter.startHandler!(makeInbound());
       await flush();
 
       adapter.sendTextCalls.length = 0;
 
-      // 发送 streaming chunk。
+      // 发送 streaming chunk（非流式适配器应忽略）。
       bus.emit('msg:out', {
         userId: 'user1',
         target: 'telegram',
@@ -356,29 +358,26 @@ describe('AdapterBridge', () => {
       });
       await flush();
 
-      expect(adapter.sendTextCalls.some((c) => c.text === 'partial...')).toBe(true);
+      expect(adapter.sendTextCalls.length).toBe(0);
     });
 
-    it('should skip complete message after streaming', async () => {
+    it('should deliver complete message even after streaming events for non-streaming adapter', async () => {
       resolveUserMock.mockReturnValue('user1');
       await adapter.startHandler!(makeInbound());
       await flush();
 
       adapter.sendTextCalls.length = 0;
 
-      // streaming chunk。
+      // streaming final（非流式适配器应忽略）。
       bus.emit('msg:out', {
         userId: 'user1',
         target: 'telegram',
-        text: 'full response',
         streaming: true,
         final: true,
       });
       await flush();
 
-      const countAfterStreaming = adapter.sendTextCalls.length;
-
-      // complete message（应被跳过）。
+      // complete message（非流式适配器应正常发送）。
       bus.emit('msg:out', {
         userId: 'user1',
         target: 'telegram',
@@ -386,8 +385,8 @@ describe('AdapterBridge', () => {
       });
       await flush();
 
-      // 不应有新的 sendText 调用。
-      expect(adapter.sendTextCalls.length).toBe(countAfterStreaming);
+      expect(adapter.sendTextCalls.length).toBe(1);
+      expect(adapter.sendTextCalls[0].text).toBe('full response');
     });
 
     it('should deliver complete message without prior streaming', async () => {
@@ -406,6 +405,79 @@ describe('AdapterBridge', () => {
       await flush();
 
       expect(adapter.sendTextCalls.some((c) => c.text === 'direct response')).toBe(true);
+    });
+
+    // ---- 流式适配器（如 AgentElegram）：转发 streaming 事件，dedup complete ----
+
+    it('should forward streaming messages for streaming adapter', async () => {
+      // 创建流式适配器。
+      const streamAdapter = createMockAdapter('agentelegram');
+      (streamAdapter as any).supportsStreaming = true;
+      const streamBridge = new AdapterBridge(streamAdapter, bus);
+      await streamBridge.start();
+
+      resolveUserMock.mockReturnValue('user1');
+      await streamAdapter.startHandler!(makeInbound({ platform: 'agentelegram', platformUserId: 'at_123' }));
+      await flush();
+
+      streamAdapter.sendTextCalls.length = 0;
+
+      bus.emit('msg:out', {
+        userId: 'user1',
+        target: 'agentelegram',
+        text: 'partial...',
+        streaming: true,
+      });
+      await flush();
+
+      expect(streamAdapter.sendTextCalls.some((c) => c.text === 'partial...')).toBe(true);
+
+      await streamBridge.stop();
+    });
+
+    it('should skip complete message after streaming for streaming adapter', async () => {
+      const streamAdapter = createMockAdapter('agentelegram');
+      (streamAdapter as any).supportsStreaming = true;
+      const streamBridge = new AdapterBridge(streamAdapter, bus);
+      await streamBridge.start();
+
+      resolveUserMock.mockReturnValue('user1');
+      await streamAdapter.startHandler!(makeInbound({ platform: 'agentelegram', platformUserId: 'at_123' }));
+      await flush();
+
+      streamAdapter.sendTextCalls.length = 0;
+
+      // streaming chunk。
+      bus.emit('msg:out', {
+        userId: 'user1',
+        target: 'agentelegram',
+        text: 'full response',
+        streaming: true,
+      });
+      await flush();
+
+      // streaming final（dedup 标记，无文本）。
+      bus.emit('msg:out', {
+        userId: 'user1',
+        target: 'agentelegram',
+        streaming: true,
+        final: true,
+      });
+      await flush();
+
+      const countAfterStreaming = streamAdapter.sendTextCalls.length;
+
+      // complete message（应被 dedup 跳过）。
+      bus.emit('msg:out', {
+        userId: 'user1',
+        target: 'agentelegram',
+        text: 'full response',
+      });
+      await flush();
+
+      expect(streamAdapter.sendTextCalls.length).toBe(countAfterStreaming);
+
+      await streamBridge.stop();
     });
   });
 

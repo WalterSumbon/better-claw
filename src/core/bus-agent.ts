@@ -305,12 +305,11 @@ export class BusAgent {
       notifyUser,
     );
 
-    // 流式结束标记。
+    // 流式结束标记（仅用于 dedup，不携带文本——文本已在最后一次 streaming 事件中发出）。
     if (lastText) {
       this.bus.emit('msg:out', {
         userId: this.userId,
         target,
-        text: lastText,
         streaming: true,
         final: true,
       });

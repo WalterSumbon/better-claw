@@ -14,6 +14,17 @@ export interface MessageAdapter {
   readonly platform: string;
   /** 命令前缀（如 "/" 或 "."）。 */
   readonly commandPrefix: string;
+  /**
+   * 是否支持流式消息推送（可选，默认 false）。
+   *
+   * 启用后 AdapterBridge 会将每个 streaming 事件的文本转发给 adapter，
+   * 并在最后通过 dedup 跳过完整消息避免重复。
+   * 适用于有增量/delta 协议的平台（如 AgentElegram）。
+   *
+   * 未启用时 bridge 只发送最终完整消息，忽略所有中间 streaming 事件。
+   * 适用于每次 sendText 都产生独立消息的平台（如 Telegram、钉钉）。
+   */
+  readonly supportsStreaming?: boolean;
 
   /**
    * 启动适配器（开始监听消息）。

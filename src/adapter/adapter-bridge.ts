@@ -166,24 +166,32 @@ export class AdapterBridge {
     const platformUserId = this.resolvePlatformUserId(payload.userId);
     if (!platformUserId) return;
 
-    // Streaming 去重逻辑：
-    // BusAgent 会先发 streaming chunks，然后发 streaming final，最后发 complete。
-    // 我们转发 streaming 事件，但跳过最终的 complete（避免重复发送同一内容）。
+    // Streaming 处理逻辑：
+    // BusAgent 会先发 streaming chunks，然后发 streaming final（无文本），最后发 complete。
+    //
+    // 流式适配器（supportsStreaming = true，如 AgentElegram）：
+    //   转发 streaming 文本，跳过最终 complete（dedup）。
+    //
+    // 非流式适配器（Telegram、DingTalk 等）：
+    //   忽略所有 streaming 事件，只发送最终 complete 消息。
     if (payload.streaming) {
-      this.streamedUsers.add(payload.userId);
-      // 转发 streaming 文本。
-      if (payload.text) {
-        await this.adapter.sendText(platformUserId, payload.text).catch((err) => {
-          const log = getLogger();
-          log.error({ err, platform: this.adapter.platform }, 'Failed to send streaming text');
-        });
+      if (this.adapter.supportsStreaming) {
+        this.streamedUsers.add(payload.userId);
+        // 转发 streaming 文本（final 标记不携带文本，仅用于 dedup）。
+        if (payload.text) {
+          await this.adapter.sendText(platformUserId, payload.text).catch((err) => {
+            const log = getLogger();
+            log.error({ err, platform: this.adapter.platform }, 'Failed to send streaming text');
+          });
+        }
       }
+      // 非流式适配器：直接忽略 streaming 事件，等 complete 消息。
       return;
     }
 
-    // 非 streaming 消息。
+    // 非 streaming 消息（complete）。
     if (this.streamedUsers.has(payload.userId)) {
-      // 已经通过 streaming 发送过了，跳过 complete 避免重复。
+      // 流式适配器已通过 streaming 发送过了，跳过 complete 避免重复。
       this.streamedUsers.delete(payload.userId);
       return;
     }

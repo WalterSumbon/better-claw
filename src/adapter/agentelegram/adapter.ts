@@ -95,6 +95,7 @@ type MgmtUserResolver = () => string | null;
 
 export class AgentelegramAdapter implements MessageAdapter {
   readonly platform = 'agentelegram' as const;
+  readonly supportsStreaming = true;
   readonly commandPrefix: string;
 
   private ws: WebSocket | null = null;
