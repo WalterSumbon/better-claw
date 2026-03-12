@@ -104,12 +104,21 @@ export class EventBus {
   /**
    * 触发事件。同步分发给所有 listener，fire-and-forget。
    * listener 抛异常会被 catch 并 log，不影响其他 listener。
+   *
+   * 注意：listener 应为同步函数。如果传入 async 函数，其 rejection
+   * 会被自动捕获并 log，但不保证执行时序。
    */
   emit<K extends EventName>(event: K, payload: EventMap[K]): void {
     // 先通知 any listeners
     for (const fn of this.anyListeners) {
       try {
-        fn(event, payload);
+        const result: any = fn(event, payload);
+        // 防御意外的 async listener：捕获 unhandled rejection。
+        if (result != null && typeof result.catch === 'function') {
+          result.catch((err: unknown) => {
+            this.logListenerError('onAny(async)', event, err);
+          });
+        }
       } catch (err) {
         this.logListenerError('onAny', event, err);
       }
@@ -120,7 +129,12 @@ export class EventBus {
     if (!set) return;
     for (const fn of set) {
       try {
-        fn(payload);
+        const result: any = fn(payload);
+        if (result != null && typeof result.catch === 'function') {
+          result.catch((err: unknown) => {
+            this.logListenerError('on(async)', event, err);
+          });
+        }
       } catch (err) {
         this.logListenerError('on', event, err);
       }

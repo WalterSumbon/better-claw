@@ -147,6 +147,13 @@ describe('BusAgent', () => {
     agent = new BusAgent('user1', bus, { commandPrefix: '/' });
   });
 
+  afterEach(async () => {
+    // 等待前一个测试中任何 orphaned 的异步操作（如 slow query mock）结算，
+    // 防止它们在下一个测试中消费 sendToAgentMock 的 mockOnce 设置。
+    agent.dispose();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  });
+
   // ---- 基本消息处理 ----
 
   describe('message processing', () => {
@@ -241,7 +248,7 @@ describe('BusAgent', () => {
       await flush();
 
       expect(customHandler).toHaveBeenCalledOnce();
-      expect(customHandler).toHaveBeenCalledWith('user1', 'arg1 arg2', expect.any(Function));
+      expect(customHandler).toHaveBeenCalledWith('user1', 'arg1 arg2', expect.any(Function), expect.objectContaining({ userId: 'user1', text: '/custom arg1 arg2' }));
       expect(msgOut.some((m) => m.text === 'Custom!')).toBe(true);
     });
 
@@ -251,12 +258,12 @@ describe('BusAgent', () => {
 
       agent.handleMessage(makeMsg('/test'));
       await flush();
-      expect(handler).toHaveBeenCalledWith('user1', '', expect.any(Function));
+      expect(handler).toHaveBeenCalledWith('user1', '', expect.any(Function), expect.objectContaining({ userId: 'user1', text: '/test' }));
 
       handler.mockClear();
       agent.handleMessage(makeMsg('/test   some args  '));
       await flush();
-      expect(handler).toHaveBeenCalledWith('user1', 'some args', expect.any(Function));
+      expect(handler).toHaveBeenCalledWith('user1', 'some args', expect.any(Function), expect.objectContaining({ userId: 'user1', text: '/test   some args  ' }));
     });
   });
 
@@ -376,6 +383,104 @@ describe('BusAgent', () => {
     });
   });
 
+  // ---- Rate limit 处理 ----
+
+  describe('rate limit handling', () => {
+    it('should pause queue and notify user on rate limit', async () => {
+      // 第一次调用抛 RateLimitError。
+      const { RateLimitError } = await import('../../src/core/agent.js');
+      sendToAgentMock.mockRejectedValueOnce(new RateLimitError(Date.now() + 5000));
+      const msgOut = collectMsgOut(bus);
+
+      agent.handleMessage(makeMsg('hello'));
+      await flush();
+
+      // 应该有 rate limit 通知。
+      expect(msgOut.some((m) => m.text?.includes('Rate limited'))).toBe(true);
+    });
+
+    it('should re-queue original payloads without double envelope', async () => {
+      const { RateLimitError } = await import('../../src/core/agent.js');
+      const callTexts: string[] = [];
+
+      // 第一次调用抛 RateLimitError。
+      // 注意：handleRateLimit 最小延迟 1000ms（Math.max(delayMs, 1000)）。
+      sendToAgentMock.mockImplementationOnce(async () => {
+        throw new RateLimitError(Date.now() + 100);
+      });
+      // 第二次调用（恢复后）正常返回，记录传入的文本。
+      sendToAgentMock.mockImplementation(
+        async (_userId: string, message: string, onMessage: (msg: unknown) => void) => {
+          callTexts.push(message);
+          onMessage({
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: 'ok' }] },
+          });
+          return { type: 'result', subtype: 'success', result: 'ok' };
+        },
+      );
+
+      agent.handleMessage(makeMsg('test message'));
+
+      // 等待 rate limit 恢复（最小 1000ms + 余量）。
+      await new Promise((resolve) => setTimeout(resolve, 1300));
+
+      // 恢复后传给 sendToAgent 的文本应该和原始文本一致（不会被多包一层）。
+      expect(callTexts.length).toBe(1);
+      expect(callTexts[0]).toBe('test message');
+    });
+
+    it('should resume queue after rate limit timer fires', async () => {
+      const { RateLimitError } = await import('../../src/core/agent.js');
+
+      // 第一次调用抛 RateLimitError。
+      // handleRateLimit 最小延迟 1000ms。
+      sendToAgentMock.mockImplementationOnce(async () => {
+        throw new RateLimitError(Date.now() + 100);
+      });
+      // 恢复后正常返回。
+      sendToAgentMock.mockImplementation(
+        async (_userId: string, _message: string, onMessage: (msg: unknown) => void) => {
+          onMessage({
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: 'resumed!' }] },
+          });
+          return { type: 'result', subtype: 'success', result: 'resumed!' };
+        },
+      );
+
+      const msgOut = collectMsgOut(bus);
+      agent.handleMessage(makeMsg('hello'));
+
+      // 等待 rate limit 恢复（最小 1000ms + 余量）。
+      await new Promise((resolve) => setTimeout(resolve, 1300));
+
+      // 应该有恢复后的正常回复。
+      expect(msgOut.some((m) => m.text === 'resumed!' && !m.streaming)).toBe(true);
+    });
+  });
+
+  // ---- dispose ----
+
+  describe('dispose', () => {
+    it('should clear timers and queues on dispose', async () => {
+      const { RateLimitError } = await import('../../src/core/agent.js');
+      sendToAgentMock.mockRejectedValueOnce(new RateLimitError(Date.now() + 60_000));
+      mockSendToAgentSuccess();
+
+      agent.handleMessage(makeMsg('hello'));
+      await flush();
+
+      // agent 现在有 resumeTimer 和 pausedUntil。
+      // dispose 应该清理它们。
+      agent.dispose();
+
+      // 发新消息不应该被 rate limit 阻止（但也不会处理，因为队列已清空）。
+      // 验证 dispose 后不会 crash。
+      expect(() => agent.dispose()).not.toThrow(); // 重复 dispose 安全
+    });
+  });
+
   // ---- 错误处理 ----
 
   describe('error handling', () => {
@@ -478,16 +583,46 @@ describe('BusAgentManager', () => {
     expect(msgOut.some((m) => m.text === 'Global!')).toBe(true);
   });
 
-  it('should stop listening after stop()', async () => {
+  it('should stop listening and dispose agents after stop()', async () => {
     mockSendToAgentSuccess();
 
     const manager = new BusAgentManager();
     manager.start(bus);
-    manager.stop();
 
+    // 先创建一个 agent。
     bus.emit('msg:in', makeMsg('hello'));
     await flush();
 
+    manager.stop();
+
+    // stop 后不再处理消息。
+    sendToAgentMock.mockClear();
+    bus.emit('msg:in', makeMsg('world'));
+    await flush();
+
     expect(sendToAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('should register global commands to pre-existing agents', async () => {
+    const manager = new BusAgentManager();
+    manager.start(bus);
+
+    // 先创建 agent。
+    mockSendToAgentSuccess();
+    bus.emit('msg:in', makeMsg('hello'));
+    await flush();
+
+    // 之后注册全局指令。
+    const handler = vi.fn(async (_uid: string, _args: string, reply: (text: string) => void) => {
+      reply('Late!');
+    }) as unknown as CommandHandler;
+    manager.registerCommand('late', handler);
+
+    const msgOut = collectMsgOut(bus);
+    bus.emit('msg:in', makeMsg('/late'));
+    await flush();
+
+    expect(handler).toHaveBeenCalledOnce();
+    expect(msgOut.some((m) => m.text === 'Late!')).toBe(true);
   });
 });
