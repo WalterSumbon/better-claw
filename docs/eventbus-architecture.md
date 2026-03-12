@@ -28,18 +28,46 @@
 
 ### 2. Adapter
 
-平台接入层。每个平台（Telegram / CLI / DingTalk / AgentBox / Agentelegram）一个 adapter。
+平台接入层。每个平台一个 adapter。
 
+#### 统一接口
+
+```typescript
+interface Adapter {
+  name: string                    // 'telegram' | 'cli' | 'cron' | 'webhook' | ...
+  start(bus: EventBus): void      // 启动平台连接，注册 bus 监听
+  stop(): void                    // 停止，取消所有监听
+}
+```
+
+每个 adapter 的 `start()` 里做两件事：
+1. 启动平台连接（grammy bot、stdin 监听、cron scheduler 等）
+2. 注册 bus 监听：`bus.on('msg:out', ...)` 和 `bus.on('agent:busy', ...)`
+
+adapter 内部收到平台消息时：`bus.emit('msg:in', { userId, source: this.name, ... })`
+
+adapter 监听 `msg:out` 时先过滤：`if (target !== this.name && target !== '*') return`
+
+#### 平台 Adapter
+
+Telegram / CLI / DingTalk / AgentBox / Agentelegram：
 - 收到平台消息 → `bus.emit('msg:in', payload)`
 - 监听 `msg:out` → 发送到对应平台
 - 监听 `agent:busy/idle` → 映射为平台特定的状态展示（如 Telegram typing）
 
-**Cron 和 Webhook 也是特殊的 Adapter：**
+#### Cron 和 Webhook（特殊 Adapter）
 
-- Cron adapter：定时触发 `emit('msg:in', { userId, source: 'cron', text: prompt })`
-- Webhook adapter：
-  - 需要 agent 响应的请求 → `emit('msg:in')`
-  - 纯通知类消息（不唤起 agent） → 直接 `emit('msg:out')`
+Cron 和 Webhook 不是"接收回复的平台"，而是"幕后发消息的人"。它们通过模拟其他平台的 source 来实现透明触发。
+
+**Cron adapter**：
+- 创建 cron 任务时配置目标平台（如 `target: 'telegram'`）
+- 触发时 source 填配置的目标平台：`emit('msg:in', { userId, source: 'telegram', text: prompt })`
+- Agent 完全无感，处理完后 `msg:out` 的 target 自然是 `'telegram'`，该平台 adapter 正常接收发送
+
+**Webhook adapter**：
+- 同理，配置时指定模拟哪个 adapter
+- 需要 agent 响应的请求：`emit('msg:in', { userId, source: 配置的平台, text })`
+- 纯通知类消息（不唤起 agent）：直接 `emit('msg:out', { target: 配置的平台, text })`
 
 ### 3. Agent
 
@@ -228,11 +256,49 @@ Agent 状态管理操作（MCP 激活/停用、Skill 安装/激活、Memory CRUD
 
 管理操作产生的副作用如果需要广播（如配置变更通知），可以在操作完成后 emit 通知事件。但这是可选的，不是核心流程。
 
+## Bus 实例管理
+
+全局单例，应用启动时创建，通过 `start(bus)` 传参注入给各模块：
+
+```typescript
+const bus = new EventBus()
+
+// log listener 最先注册
+bus.onAny((event, payload) => logger.debug({ event, payload }, '[bus]'))
+
+// 启动各 adapter
+for (const adapter of adapters) {
+  adapter.start(bus)
+}
+
+// 启动各 agent
+for (const agent of agents) {
+  agent.start(bus)
+}
+```
+
+## 迁移策略
+
+**混合方案**：核心部分一次性切，adapter 逐个迁移。
+
+### 第一阶段：核心（一次性切）
+1. 实现 EventBus
+2. 实现 Agent 模块（双队列、三种策略、abort 语义）
+3. 应用启动入口改造（创建 Bus 单例，注入各模块）
+
+### 第二阶段：Adapter 逐个迁移
+1. CLI adapter（最简单，优先验证）
+2. Telegram adapter
+3. Cron adapter 化
+4. Webhook adapter 化
+5. 其余 adapter（DingTalk / AgentBox / Agentelegram）
+
+每迁移一个 adapter 就可以独立测试验证。
+
+### 开发环境
+- 分支：`feat/eventbus`
+- 工作目录：`/Users/xiahan/work/better-claw-eventbus`
+
 ## TODO
 
 - [ ] 群聊支持：可能需要在 payload 中增加 `channelId` 字段来区分同一用户的不同会话
-- [ ] 实现 EventBus
-- [ ] 改造 Adapter 层
-- [ ] 改造 Agent / Session
-- [ ] Cron adapter 化
-- [ ] Webhook adapter 化
