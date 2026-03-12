@@ -423,6 +423,15 @@ session:
   # 默认值：false
   carryoverIncludeToolCalls: false
 
+  # 是否向用户推送 context 相关事件通知。
+  # 开启后以下事件会向用户发送提示消息：
+  #   - 自动轮转（timeout / max_context）
+  #   - Soft 阈值触发（后台开始准备摘要）
+  #   - Hard 阈值触发（mid-query 强制轮转）
+  #   - SDK auto-compact
+  # 默认值：false
+  notifyContextEvents: false
+
 # ----------------------------------------------------------------------------
 # 重启权限配置
 # ----------------------------------------------------------------------------
@@ -590,6 +599,29 @@ skills:
 #   # 请求时需在 Header 中携带 X-API-Key: <apiKey>。
 #   # 留空则不验证（仅限内网部署时使用）。
 #   # apiKey: "your-secret-key"
+
+# ----------------------------------------------------------------------------
+# AgentElegram 配置（可选）
+# ----------------------------------------------------------------------------
+# AgentElegram 是一个从底层专为 Agent/MultiAgent 设计的聊天平台。
+# 配置此段后会启动 AgentElegram 适配器，通过 WebSocket 连接到 AgentElegram 服务器。
+# 不配置此段则不启动 AgentElegram 适配器。
+#
+# agentelegram:
+#   # AgentElegram 服务器 WebSocket 地址（必填）。
+#   # 默认值："ws://localhost:4000/ws"
+#   serverUrl: "ws://localhost:4000/ws"
+#
+#   # Agent API Key（必填）。由 AgentElegram 的 register-agent 接口颁发（格式：ag-xxx）。
+#   apiKey: "ag-your-agent-api-key"
+#
+#   # 命令前缀（可选）。用于识别命令消息（如 /new、/stop）。
+#   # 默认值："/"
+#   # commandPrefix: "/"
+#
+#   # 断线重连间隔（毫秒）。连接断开后等待此时间再尝试重连。
+#   # 默认值：5000
+#   # reconnectInterval: 5000
 
 # ============================================================================
 # Per-User MCP Servers（非配置文件项，仅供参考）
