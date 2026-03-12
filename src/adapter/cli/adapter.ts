@@ -27,7 +27,7 @@ export class CLIAdapter implements MessageAdapter {
     console.log('Better-Claw CLI ready. Type your message (Ctrl+C to exit).\n');
     this.rl.prompt();
 
-    this.rl.on('line', async (line: string) => {
+    this.rl.on('line', (line: string) => {
       const text = line.trim();
       if (!text) {
         this.rl?.prompt();
@@ -59,10 +59,12 @@ export class CLIAdapter implements MessageAdapter {
         commandArgs,
       };
 
-      await handler(msg);
-      if (this.running) {
+      // Fire-and-forget：EventBus 架构下 handler 立即返回。
+      // prompt 恢复由 onAgentDone() 处理。
+      handler(msg).catch((e) => {
+        console.error('CLI handler error:', e);
         this.rl?.prompt();
-      }
+      });
     });
 
     this.rl.on('close', () => {
@@ -70,6 +72,16 @@ export class CLIAdapter implements MessageAdapter {
       console.log('\nGoodbye!');
       process.exit(0);
     });
+  }
+
+  /**
+   * Agent 处理完成回调。由 AdapterBridge 在 agent:idle 时调用。
+   * 恢复 CLI prompt。
+   */
+  onAgentDone(_platformUserId: string): void {
+    if (this.running) {
+      this.rl?.prompt();
+    }
   }
 
   /** 停止 CLI 适配器。 */

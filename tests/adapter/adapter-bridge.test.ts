@@ -35,11 +35,13 @@ function createMockAdapter(platform = 'telegram'): MessageAdapter & {
   sendTextCalls: Array<{ platformUserId: string; text: string }>;
   sendFileCalls: Array<{ platformUserId: string; filePath: string; options?: SendFileOptions }>;
   showTypingCalls: string[];
+  onAgentDoneCalls: string[];
 } {
   let startHandler: ((msg: InboundMessage) => Promise<void>) | null = null;
   const sendTextCalls: Array<{ platformUserId: string; text: string }> = [];
   const sendFileCalls: Array<{ platformUserId: string; filePath: string; options?: SendFileOptions }> = [];
   const showTypingCalls: string[] = [];
+  const onAgentDoneCalls: string[] = [];
 
   return {
     platform,
@@ -48,6 +50,7 @@ function createMockAdapter(platform = 'telegram'): MessageAdapter & {
     sendTextCalls,
     sendFileCalls,
     showTypingCalls,
+    onAgentDoneCalls,
     async start(handler) {
       startHandler = handler;
       // 保存引用以便测试中触发。
@@ -62,6 +65,9 @@ function createMockAdapter(platform = 'telegram'): MessageAdapter & {
     },
     async showTyping(platformUserId) {
       showTypingCalls.push(platformUserId);
+    },
+    onAgentDone(platformUserId) {
+      onAgentDoneCalls.push(platformUserId);
     },
   };
 }
@@ -523,6 +529,82 @@ describe('AdapterBridge', () => {
       await flush();
 
       expect(adapter.sendTextCalls.length).toBe(0);
+    });
+  });
+
+  // ---- onAgentDone 生命周期 ----
+
+  describe('onAgentDone lifecycle', () => {
+    it('should call onAgentDone on agent:idle for matching platform', async () => {
+      resolveUserMock.mockReturnValue('user1');
+      await adapter.startHandler!(makeInbound());
+      await flush();
+
+      bus.emit('agent:idle', { userId: 'user1', target: 'telegram' });
+      await flush();
+
+      expect(adapter.onAgentDoneCalls).toEqual(['tg_123']);
+    });
+
+    it('should not call onAgentDone for different platform', async () => {
+      resolveUserMock.mockReturnValue('user1');
+      await adapter.startHandler!(makeInbound());
+      await flush();
+
+      bus.emit('agent:idle', { userId: 'user1', target: 'cli' });
+      await flush();
+
+      expect(adapter.onAgentDoneCalls.length).toBe(0);
+    });
+
+    it('should not call onAgentDone for broadcast sources', async () => {
+      resolveUserMock.mockReturnValue('user1');
+      await adapter.startHandler!(makeInbound());
+      await flush();
+
+      bus.emit('agent:idle', { userId: 'user1', target: 'cron' });
+      await flush();
+
+      expect(adapter.onAgentDoneCalls.length).toBe(0);
+    });
+
+    it('should call onAgentDone with correct platformUserId from bindings', async () => {
+      // 不通过入站建立缓存，直接测试 binding 解析。
+      getUserMock.mockReturnValue({
+        userId: 'user2',
+        bindings: [{ platform: 'telegram', platformUserId: 'tg_999' }],
+      });
+
+      bus.emit('agent:idle', { userId: 'user2', target: 'telegram' });
+      await flush();
+
+      expect(adapter.onAgentDoneCalls).toEqual(['tg_999']);
+    });
+
+    it('should work with adapter that does not implement onAgentDone', async () => {
+      // 创建没有 onAgentDone 的适配器。
+      const plainAdapter: MessageAdapter = {
+        platform: 'plain',
+        commandPrefix: '/',
+        async start() {},
+        async stop() {},
+        async sendText() {},
+        async sendFile() {},
+        async showTyping() {},
+      };
+      const plainBridge = new AdapterBridge(plainAdapter, bus);
+      await plainBridge.start();
+
+      getUserMock.mockReturnValue({
+        userId: 'user1',
+        bindings: [{ platform: 'plain', platformUserId: 'plain_user' }],
+      });
+
+      // 不应抛错。
+      bus.emit('agent:idle', { userId: 'user1', target: 'plain' });
+      await flush();
+
+      await plainBridge.stop();
     });
   });
 

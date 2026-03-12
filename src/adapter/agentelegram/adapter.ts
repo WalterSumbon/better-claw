@@ -4,10 +4,11 @@
  * 将 Better-Claw 作为 AI Agent 接入 agentelegram 聊天平台。
  * 通过 WebSocket 连接 agentelegram 服务端，遵循 agentelegram Agent Protocol。
  *
- * 消息流：
+ * 消息流（EventBus 架构）：
  *   agentelegram 用户发消息 → agentelegram Server → message/message_done 事件 → 本适配器
- *   → InboundMessage → handleMessage → enqueue → agent 处理
- *   → sendText() → send_message_delta + send_message_done → agentelegram Server → 用户
+ *   → InboundMessage → AdapterBridge → bus.emit('msg:in') → BusAgent → agent 处理
+ *   → bus.emit('msg:out') → AdapterBridge → sendText() → send_message_delta → 用户
+ *   → agent:idle → AdapterBridge → onAgentDone() → finishStreaming() → send_message_done → 用户
  *
  * 管理协议：
  *   agentelegram 前端管理面板 → REST API → Server → mgmt_request → 本适配器
@@ -260,8 +261,16 @@ export class AgentelegramAdapter implements MessageAdapter {
   }
 
   /**
+   * Agent 处理完成回调。由 AdapterBridge 在 agent:idle 时调用。
+   * 发送 send_message_done 完成流式消息。
+   */
+  onAgentDone(platformUserId: string): void {
+    this.finishStreaming(platformUserId);
+  }
+
+  /**
    * 完成指定会话的流式消息。
-   * 由 handleMessage → onComplete 回调触发。
+   * 由 onAgentDone() 或错误处理时调用。
    */
   finishStreaming(conversationId: string): void {
     const log = getLogger();
@@ -472,18 +481,14 @@ export class AgentelegramAdapter implements MessageAdapter {
       commandArgs,
     };
 
-    // 异步处理消息。handler 返回的 Promise 在 agent 完成处理后 resolve。
-    this.handler?.(inbound)
-      .then(() => {
-        // Agent 处理完成，发送 send_message_done 完成流式消息。
-        this.finishStreaming(conversationId);
-      })
-      .catch((e) => {
-        const errMsg = e instanceof Error ? e.message : String(e);
-        log.error({ err: errMsg, conversationId }, 'AgentElegram: handler error');
-        // 出错也要完成流式消息，避免 orphan stream。
-        this.finishStreaming(conversationId);
-      });
+    // Fire-and-forget：EventBus 架构下 handler 立即返回（仅 emit msg:in）。
+    // Agent 完成由 AdapterBridge 通过 agent:idle → onAgentDone → finishStreaming 通知。
+    this.handler?.(inbound).catch((e) => {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      log.error({ err: errMsg, conversationId }, 'AgentElegram: handler error');
+      // handler 自身出错时完成流式消息，避免 orphan stream。
+      this.finishStreaming(conversationId);
+    });
   }
 
   /**
