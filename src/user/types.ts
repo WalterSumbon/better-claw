@@ -1,5 +1,5 @@
 /** 支持的平台类型。 */
-export type PlatformType = 'telegram' | 'qq' | 'wechat' | 'cli' | 'dingtalk' | 'agentbox' | 'agentelegram';
+export type PlatformType = 'telegram' | 'qq' | 'wechat' | 'cli' | 'dingtalk' | 'agentelegram';
 
 /** 用户的平台账号绑定记录。 */
 export interface PlatformBinding {

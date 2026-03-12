@@ -53,7 +53,7 @@ export interface MessageAdapter {
    * Agent 处理完成后的回调（可选）。
    *
    * 由 AdapterBridge 在收到 agent:idle 事件时调用。
-   * 用于流式协议的完成信号（如 AgentBox 的 done、AgentElegram 的 send_message_done）
+   * 用于流式协议的完成信号（如 AgentElegram 的 send_message_done）
    * 或 CLI 的 prompt 恢复。
    *
    * @param platformUserId - 平台用户 ID。

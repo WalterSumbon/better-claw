@@ -2,6 +2,7 @@ import { createInterface, type Interface as ReadlineInterface } from 'readline';
 import type { MessageAdapter, SendFileOptions } from '../interface.js';
 import type { InboundMessage } from '../types.js';
 import { formatForTerminal } from './formatter.js';
+import { getLogger } from '../../logger/index.js';
 
 /** CLI 适配器：通过终端 stdin/stdout 与 agent 交互。 */
 export class CLIAdapter implements MessageAdapter {
@@ -62,7 +63,7 @@ export class CLIAdapter implements MessageAdapter {
       // Fire-and-forget：EventBus 架构下 handler 立即返回。
       // prompt 恢复由 onAgentDone() 处理。
       handler(msg).catch((e) => {
-        console.error('CLI handler error:', e);
+        getLogger().error({ err: e }, 'CLI handler error');
         this.rl?.prompt();
       });
     });

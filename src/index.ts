@@ -346,17 +346,7 @@ async function main(): Promise<void> {
     log.info('DingTalk adapter started');
   }
 
-  // 9.4. AgentBox 适配器。
-  if (config.agentbox) {
-    const { AgentBoxAdapter } = await import('./adapter/agentbox/adapter.js');
-    const abAdapter = await AgentBoxAdapter.create(config.agentbox);
-    const abBridge = new AdapterBridge(abAdapter, bus);
-    bridges.push(abBridge);
-    await abBridge.start();
-    log.info('AgentBox adapter started');
-  }
-
-  // 9.5. AgentElegram 适配器。
+  // 9.4. AgentElegram 适配器。
   if (config.agentelegram) {
     const { AgentelegramAdapter } = await import('./adapter/agentelegram/adapter.js');
     const mgmtUserResolver = () => {
