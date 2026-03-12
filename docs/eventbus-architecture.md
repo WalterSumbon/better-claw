@@ -50,7 +50,7 @@ adapter 监听 `msg:out` 时先过滤：`if (target !== this.name && target !== 
 
 #### 平台 Adapter
 
-Telegram / CLI / DingTalk / AgentBox / Agentelegram：
+Telegram / CLI / DingTalk / Agentelegram：
 - 收到平台消息 → `bus.emit('msg:in', payload)`
 - 监听 `msg:out` → 发送到对应平台
 - 监听 `agent:busy/idle` → 映射为平台特定的状态展示（如 Telegram typing）
@@ -291,7 +291,7 @@ for (const agent of agents) {
 2. Telegram adapter
 3. Cron adapter 化
 4. Webhook adapter 化
-5. 其余 adapter（DingTalk / AgentBox / Agentelegram）
+5. 其余 adapter（DingTalk / Agentelegram）
 
 每迁移一个 adapter 就可以独立测试验证。
 

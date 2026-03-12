@@ -221,26 +221,6 @@ const MessageEnvelopeConfigSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
-/** AgentBox 适配器配置。 */
-const AgentBoxConfigSchema = z.object({
-  /** AgentBox 服务器 WebSocket 地址（如 ws://localhost:3001）。 */
-  serverUrl: z.string().default('ws://localhost:3001'),
-  /** Agent API Key，用于 WebSocket 连接认证。
-   *  对应 AgentBox 的 data/.agent-key 或 AGENTBOX_AGENT_KEY 环境变量。 */
-  agentKey: z.string().optional(),
-  /** 注册为 agent 时使用的 ID。 */
-  agentId: z.string().default('better-claw'),
-  /** 注册为 agent 时的显示名称。 */
-  agentName: z.string().default('Better-Claw'),
-  /** 命令前缀（默认 "/"）。 */
-  commandPrefix: z.string().default('/'),
-  /** 断线重连间隔（毫秒）。 */
-  reconnectInterval: z.number().default(5000),
-  /** 发送 done 信号前的空闲等待时间（毫秒）。
-   *  在此期间如果有 showTyping 或 sendText 调用，计时器会重置。 */
-  doneTimeout: z.number().default(10_000),
-});
-
 /** AgentElegram 适配器配置。 */
 const AgentelegramConfigSchema = z.object({
   /** agentelegram 服务器 WebSocket 地址（如 ws://localhost:4000/ws）。 */
@@ -350,8 +330,6 @@ export const AppConfigSchema = z.object({
   })),
   /** Webhook 配置（可选，不配置则不启动 Webhook 服务器）。 */
   webhook: WebhookConfigSchema.optional(),
-  /** AgentBox 配置（可选，不配置则不启动 AgentBox 适配器）。 */
-  agentbox: AgentBoxConfigSchema.optional(),
   /** AgentElegram 配置（可选，不配置则不启动 AgentElegram 适配器）。 */
   agentelegram: AgentelegramConfigSchema.optional(),
   /** 传递给 SDK subprocess 的额外环境变量（键值对）。
