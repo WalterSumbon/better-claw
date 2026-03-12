@@ -47,9 +47,60 @@
 
 - 监听 `msg:in`（过滤属于自己 userId 的事件）
 - 根据消息内容自行决定处理方式（普通 query、命令、abort 等）
-- 内部维护自己的 query 队列，串行执行 SDK 调用
 - 流式输出过程中逐片段 `emit('msg:out')`
 - 状态切换时 `emit('agent:busy')` / `emit('agent:idle')`
+
+#### Agent 内部架构
+
+Agent 内部维护**两个独立队列**，各自串行执行，互不阻塞：
+
+```
+msg:in listener
+  → Agent 判断内容（指令前缀可配置）
+    ├─ 指令（/stop /new /context ...）→ 指令队列 → 指令执行器
+    └─ 普通消息 → 普通消息队列 → query 执行器
+```
+
+**指令队列**：
+- 独立于普通消息队列，不会被长时间运行的 SDK query 阻塞
+- 指令执行器有权干预普通队列（如 abort 当前 query），反过来不行
+- 指令可能包含多个步骤（如 `/new`：先 abort 当前 query → 等 abort 完成 → rotate session）
+- 是否是指令由 Agent 模块决定，指令前缀可配置
+
+**普通消息队列 — 三种策略（可配置）**：
+- **sequential**（默认）：排队依次执行
+- **merge**：当前 query 正在执行时，后续消息累积；当前执行完后将累积消息用 envelope 换行拼接合并为一条发给 SDK
+- **interrupt**：新消息到来时 abort 当前 query，新消息顶上去执行
+
+**abort 语义**：
+- 只中断当前正在执行的 query，不清空队列
+- 已完成的 tool loop 结果保留在 conversation history，只是不再继续循环
+- 通过 `AbortController.abort()` 通知 SDK 退出 `for await` 循环
+
+**query 执行流程**：
+
+```typescript
+async processQueue() {
+  while (queue.length > 0) {
+    const msg = queue.shift()  // 或 merge 多条
+    this.abortController = new AbortController()
+    bus.emit('agent:busy', { userId })
+
+    try {
+      for await (const chunk of sdk.query(msg.text, {
+        signal: this.abortController.signal
+      })) {
+        bus.emit('msg:out', { streaming: true, text: chunk })
+      }
+      bus.emit('msg:out', { text: fullText })  // 完整消息
+    } catch (e) {
+      if (e.name === 'AbortError') { /* 正常中断，已完成的 tool loop 已保留 */ }
+    }
+
+    bus.emit('agent:idle', { userId })
+  }
+}
+```
 
 ## 事件定义
 
