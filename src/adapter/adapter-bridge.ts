@@ -81,11 +81,14 @@ export class AdapterBridge {
   private async handleInbound(msg: InboundMessage): Promise<void> {
     const log = getLogger();
 
-    // 1. ACK（Telegram 防重投递）。Fire-and-forget，不阻塞消息处理。
-    msg.ack?.().catch((err) => {
-      const ackLog = getLogger();
-      ackLog.warn({ err, platform: msg.platform }, 'ACK failed (non-blocking)');
-    });
+    // 1. ACK（如有）。用于需要显式确认的平台（如钉钉）。
+    //    Telegram 不需要（grammy 内部自动管理 offset），但其他 adapter 可能提供。
+    if (msg.ack) {
+      msg.ack().catch((err) => {
+        const ackLog = getLogger();
+        ackLog.warn({ err, platform: msg.platform }, 'ACK failed (non-blocking)');
+      });
+    }
 
     // 2. /bind 命令在用户解析之前处理（因为未绑定用户也能执行）。
     if (msg.isCommand && msg.commandName === 'bind') {

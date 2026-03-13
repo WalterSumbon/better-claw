@@ -149,10 +149,8 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand,
         commandName,
         commandArgs,
-        ack: async () => {
-          // 通过 getUpdates(offset) 确认该 update 已处理，防止重启后重新投递。
-          await this.bot.api.getUpdates({ offset: ctx.update.update_id + 1, limit: 1 });
-        },
+        // 注意：不需要手动 ack。grammy 内部通过 offset 自动确认已处理的 update，
+        // 手动调用 getUpdates 会与 polling loop 产生并发冲突导致 409。
       };
 
       try {
