@@ -283,3 +283,5 @@ env -u CLAUDECODE npx vitest run
 7. **遇到的错误都要记录到此文件的踩坑记录中**，帮助后续开发避免重复踩坑。
 
 8. **禁止防御性修复**：调试时严禁采用"加超时兜底"、"静默吞错误"等治标不治本的偷懒做法。必须通过打 debug 日志、追踪事件流等方式找出问题的根本原因，然后针对性修复。
+
+9. **禁止使用 `tsx watch`**：`tsx watch` 是开发热重载工具，**绝对不能**在 tmux 运行的 Better-Claw 实例旁使用。它会在文件变更时自动启动新实例，与正在运行的主进程争抢 Telegram long polling（触发 409 Conflict），产生幽灵进程和连锁崩溃。进程管理统一使用 `start.sh`（带自动重启的 wrapper 脚本）。如需修改代码后重启，使用 `/restart` 命令或 MCP restart 工具。
