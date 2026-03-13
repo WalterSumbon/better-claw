@@ -130,6 +130,9 @@ export class TelegramAdapter implements MessageAdapter {
       };
     };
 
+    // 是否为群聊（group / supergroup / channel 均视为群聊）。
+    const isGroupChat = (ctx: Context): boolean => ctx.chat?.type !== 'private';
+
     // 提取被回复消息的上下文（reply_to_message）：文本、发送人、时间戳。
     const extractReplyTo = (ctx: Context): { text?: string; senderName?: string; date?: number } | undefined => {
       const reply = ctx.message?.reply_to_message;
@@ -193,6 +196,7 @@ export class TelegramAdapter implements MessageAdapter {
         commandArgs,
         replyTo: extractReplyTo(ctx),
         sender: extractSender(ctx),
+        isGroup: isGroupChat(ctx),
       };
 
       try {
@@ -248,6 +252,7 @@ export class TelegramAdapter implements MessageAdapter {
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
         sender: extractSender(ctx),
+        isGroup: isGroupChat(ctx),
       };
 
       try {
@@ -305,6 +310,7 @@ export class TelegramAdapter implements MessageAdapter {
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
         sender: extractSender(ctx),
+        isGroup: isGroupChat(ctx),
       };
 
       try {
@@ -363,6 +369,7 @@ export class TelegramAdapter implements MessageAdapter {
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
         sender: extractSender(ctx),
+        isGroup: isGroupChat(ctx),
       };
 
       try {
@@ -420,6 +427,7 @@ export class TelegramAdapter implements MessageAdapter {
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
         sender: extractSender(ctx),
+        isGroup: isGroupChat(ctx),
       };
 
       try {
@@ -466,6 +474,7 @@ export class TelegramAdapter implements MessageAdapter {
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
         sender: extractSender(ctx),
+        isGroup: isGroupChat(ctx),
       };
 
       try {
@@ -532,6 +541,7 @@ export class TelegramAdapter implements MessageAdapter {
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
         sender: extractSender(ctx),
+        isGroup: isGroupChat(ctx),
       };
 
       try {
@@ -593,6 +603,7 @@ export class TelegramAdapter implements MessageAdapter {
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
         sender: extractSender(ctx),
+        isGroup: isGroupChat(ctx),
       };
 
       try {
@@ -650,6 +661,7 @@ export class TelegramAdapter implements MessageAdapter {
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
         sender: extractSender(ctx),
+        isGroup: isGroupChat(ctx),
       };
 
       try {
@@ -682,6 +694,7 @@ export class TelegramAdapter implements MessageAdapter {
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
         sender: extractSender(ctx),
+        isGroup: isGroupChat(ctx),
       };
 
       try {
@@ -720,6 +733,7 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand: false,
         replyTo: extractReplyTo(ctx),
         sender: extractSender(ctx),
+        isGroup: isGroupChat(ctx),
         attachments: [attachment],
       };
 

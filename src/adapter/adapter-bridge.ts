@@ -337,9 +337,11 @@ export class AdapterBridge {
     const localTime = formatLocalTime(now, tz);
     const offset = getUtcOffset(tz);
 
-    // 发送者信息（群聊区分说话人 + 提供 id 用于 @mention）。
+    // 发送者信息：仅群聊需要（区分说话人 + 提供 id 用于 @mention）。
+    // 私聊中发送者永远是用户本人，agent 从 core memory 已知其身份，额外的 sender 行
+    // 反而会导致 agent 以第三人称称呼用户。
     let senderLine = '';
-    if (msg.sender) {
+    if (msg.isGroup && msg.sender) {
       const s = msg.sender;
       const namePart = s.username ? `${s.name} (@${s.username})` : s.name;
       senderLine = `[发送者: ${namePart} id:${s.platformId}]\n`;
