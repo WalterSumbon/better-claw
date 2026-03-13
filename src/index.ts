@@ -143,8 +143,8 @@ function registerGlobalCommands(manager: BusAgentManager): void {
     log.info({ userId, platform: payload.source }, 'Restart requested via /restart command');
     writeRestartMarker(userId, 'command');
     reply('🔄 Restarting...');
-    // 延迟退出，确保消息发送完成。外层进程管理器负责重新拉起。
-    setTimeout(() => process.kill(process.pid, 'SIGTERM'), 500);
+    // marker 已 fsync 落盘，立即退出。外层进程管理器负责重新拉起。
+    process.kill(process.pid, 'SIGTERM');
   });
 
   // /admin — 管理员命令。
