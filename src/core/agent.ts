@@ -762,6 +762,29 @@ export async function sendToAgent(
     }
   });
 
+  // ── 0-cost zombie 检测 ──
+  // 子进程返回 costUsd=0, turns=0, durationMs=0 的 result 说明它根本没成功处理消息
+  // （可能是 resume 了一个不存在的 session ID 导致初始化失败），子进程即将退出。
+  // 主动关闭，让下次消息触发全新启动，而不是等到 pushMessage 时才发现 transport 已死。
+  if (
+    resultMessage.total_cost_usd === 0
+    && resultMessage.num_turns === 0
+    && resultMessage.duration_ms === 0
+    && proc.isAlive
+  ) {
+    log.warn({ userId }, 'Zero-cost result detected, proactively closing zombie subprocess');
+    proc.close();
+    // 清除 SDK session ID，下次启动不 resume（避免再次触发同样的问题）。
+    state.sdkSessionId = null;
+    proc.sdkSessionId = null;
+    const currentActive = readActiveSession(userId);
+    if (currentActive) {
+      currentActive.sdkSessionId = null;
+      currentActive.updatedAt = new Date().toISOString();
+      writeActiveSession(userId, currentActive);
+    }
+  }
+
   // ── 主时机：消息处理完毕后，如果子进程 dirty，后台 SDK 重启（隐藏延迟）──
   if (proc.sdkRestartState === 'dirty') {
     log.info({ userId }, 'Post-message SDK restart triggered (primary checkpoint)');
