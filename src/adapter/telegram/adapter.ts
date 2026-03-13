@@ -118,6 +118,18 @@ export class TelegramAdapter implements MessageAdapter {
     const log = getLogger();
     this.running = true;
 
+    // 提取消息发送者信息（from）。
+    const extractSender = (ctx: Context): InboundMessage['sender'] => {
+      const from = ctx.message?.from;
+      if (!from) return undefined;
+      const name = (from.first_name + (from.last_name ? ` ${from.last_name}` : '')) || from.username || 'Unknown';
+      return {
+        platformId: String(from.id),
+        name,
+        username: from.username,
+      };
+    };
+
     // 提取被回复消息的上下文（reply_to_message）：文本、发送人、时间戳。
     const extractReplyTo = (ctx: Context): { text?: string; senderName?: string; date?: number } | undefined => {
       const reply = ctx.message?.reply_to_message;
@@ -180,6 +192,7 @@ export class TelegramAdapter implements MessageAdapter {
         commandName,
         commandArgs,
         replyTo: extractReplyTo(ctx),
+        sender: extractSender(ctx),
       };
 
       try {
@@ -234,6 +247,7 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand: false,
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
+        sender: extractSender(ctx),
       };
 
       try {
@@ -290,6 +304,7 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand: false,
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
+        sender: extractSender(ctx),
       };
 
       try {
@@ -347,6 +362,7 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand: false,
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
+        sender: extractSender(ctx),
       };
 
       try {
@@ -403,6 +419,7 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand: false,
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
+        sender: extractSender(ctx),
       };
 
       try {
@@ -448,6 +465,7 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand: false,
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
+        sender: extractSender(ctx),
       };
 
       try {
@@ -513,6 +531,7 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand: false,
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
+        sender: extractSender(ctx),
       };
 
       try {
@@ -573,6 +592,7 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand: false,
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
+        sender: extractSender(ctx),
       };
 
       try {
@@ -629,6 +649,7 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand: false,
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
+        sender: extractSender(ctx),
       };
 
       try {
@@ -660,6 +681,7 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand: false,
         attachments: [attachment],
         replyTo: extractReplyTo(ctx),
+        sender: extractSender(ctx),
       };
 
       try {
@@ -697,6 +719,7 @@ export class TelegramAdapter implements MessageAdapter {
         raw: ctx.message,
         isCommand: false,
         replyTo: extractReplyTo(ctx),
+        sender: extractSender(ctx),
         attachments: [attachment],
       };
 

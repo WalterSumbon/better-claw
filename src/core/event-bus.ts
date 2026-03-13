@@ -26,16 +26,11 @@ export interface FileAttachment {
 export interface MsgInPayload {
   userId: string;
   source: string;
+  /** 原始消息文本（用于指令解析等内部逻辑）。 */
   text?: string;
+  /** 预构建的信封文本（含平台来源、时间戳、发送者、回复上下文等元数据）。由 AdapterBridge 生成，供 agent 消费。 */
+  envelope?: string;
   files?: FileAttachment[];
-  /** 被回复的消息上下文（如 Telegram reply）。 */
-  replyTo?: {
-    text?: string;
-    /** 被回复消息的发送者名称。 */
-    senderName?: string;
-    /** 被回复消息的发送时间（Unix 时间戳，秒）。 */
-    date?: number;
-  };
 }
 
 export interface MsgOutPayload {

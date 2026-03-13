@@ -16,6 +16,9 @@ import type { MessageAdapter } from './interface.js';
 import type { InboundMessage } from './types.js';
 import { resolveUser, bindPlatform, bindPlatformByUserId, getUser } from '../user/manager.js';
 import { getLogger } from '../logger/index.js';
+import { getConfig } from '../config/index.js';
+import { readProfile } from '../user/store.js';
+import { resolveTimezone, formatLocalTime, getUtcOffset } from '../utils/timezone.js';
 
 /** 这些 source 的消息需要广播到用户所有已绑定平台（而不仅仅是发送来源平台）。 */
 const BROADCAST_SOURCES = new Set(['cron', 'system', 'webhook']);
@@ -146,13 +149,16 @@ export class AdapterBridge {
       }));
     }
 
-    // 6. 发射 msg:in。
+    // 6. 构建信封（含平台来源、时间戳、发送者、回复上下文）。
+    const envelope = this.buildEnvelope(msg, userId);
+
+    // 7. 发射 msg:in。
     this.bus.emit('msg:in', {
       userId,
       source: this.adapter.platform,
       text: msg.text,
+      envelope,
       files,
-      replyTo: msg.replyTo,
     });
 
     log.debug(
@@ -309,6 +315,54 @@ export class AdapterBridge {
   }
 
   // ---- 辅助方法 ----
+
+  /**
+   * 为入站消息构建信封（平台来源、时间戳、发送者、回复上下文）。
+   *
+   * 格式示例：
+   * [telegram | 2026-03-13 17:17 Asia/Shanghai (UTC+8)]
+   * [发送者: 寒哥 (@zenith) id:123456]
+   * [回复 BotName | 2026-03-13 16:53: "原消息"]
+   * 用户消息
+   */
+  private buildEnvelope(msg: InboundMessage, userId: string): string {
+    const config = getConfig();
+    if (!config.messageEnvelope?.enabled) {
+      return msg.text;
+    }
+
+    const profile = readProfile(userId);
+    const tz = resolveTimezone(profile?.timezone);
+    const now = new Date();
+    const localTime = formatLocalTime(now, tz);
+    const offset = getUtcOffset(tz);
+
+    // 发送者信息（群聊区分说话人 + 提供 id 用于 @mention）。
+    let senderLine = '';
+    if (msg.sender) {
+      const s = msg.sender;
+      const namePart = s.username ? `${s.name} (@${s.username})` : s.name;
+      senderLine = `[发送者: ${namePart} id:${s.platformId}]\n`;
+    }
+
+    // 被回复消息上下文。
+    let replyCtx = '';
+    if (msg.replyTo) {
+      const r = msg.replyTo;
+      const parts: string[] = [];
+      if (r.senderName) parts.push(r.senderName);
+      if (r.date) {
+        parts.push(formatLocalTime(new Date(r.date * 1000), tz));
+      }
+      const meta = parts.length > 0 ? ` ${parts.join(' | ')}` : '';
+      const quote = r.text ? `: "${r.text}"` : '';
+      if (meta || quote) {
+        replyCtx = `[回复${meta}${quote}]\n`;
+      }
+    }
+
+    return `[${this.adapter.platform} | ${localTime} ${tz} (${offset})]\n${senderLine}${replyCtx}${msg.text}`;
+  }
 
   /**
    * 解析 userId 对应的 platformUserId。

@@ -23,9 +23,6 @@ import {
   resetAgentSession,
 } from './agent.js';
 import { getLogger } from '../logger/index.js';
-import { getConfig } from '../config/index.js';
-import { readProfile } from '../user/store.js';
-import { resolveTimezone, formatLocalTime, getUtcOffset } from '../utils/timezone.js';
 
 // ---- 类型定义 ----
 
@@ -220,7 +217,7 @@ export class BusAgent {
         // merge / interrupt：合并所有积压消息。
         const payloads = this.messageQueue.splice(0);
         this.currentPayloads = payloads;
-        text = payloads.map((p) => this.buildEnvelope(p)).join('\n');
+        text = payloads.map((p) => p.envelope ?? p.text ?? '').join('\n');
         source = payloads[payloads.length - 1].source;
         files = payloads.flatMap((p) => p.files ?? []);
         if (files.length === 0) files = undefined;
@@ -228,7 +225,7 @@ export class BusAgent {
         // sequential 或只有 1 条消息。
         const payload = this.messageQueue.shift()!;
         this.currentPayloads = [payload];
-        text = this.buildEnvelope(payload);
+        text = payload.envelope ?? payload.text ?? '';
         source = payload.source;
         files = payload.files;
       }
@@ -366,41 +363,6 @@ export class BusAgent {
       .join('');
 
     return text.trim() ? text : null;
-  }
-
-  /**
-   * 为消息添加信封（平台来源、时间戳、时区）。
-   *
-   * 格式：[telegram | 2026-03-12 15:06:32 Asia/Shanghai (UTC+8)]
-   */
-  private buildEnvelope(payload: MsgInPayload): string {
-    const config = getConfig();
-    if (!config.messageEnvelope?.enabled) {
-      return payload.text ?? '';
-    }
-
-    const profile = readProfile(payload.userId);
-    const tz = resolveTimezone(profile?.timezone);
-    const now = new Date();
-    const localTime = formatLocalTime(now, tz);
-    const offset = getUtcOffset(tz);
-
-    let replyCtx = '';
-    if (payload.replyTo) {
-      const r = payload.replyTo;
-      const parts: string[] = [];
-      if (r.senderName) parts.push(r.senderName);
-      if (r.date) {
-        const replyTime = formatLocalTime(new Date(r.date * 1000), tz);
-        parts.push(replyTime);
-      }
-      const meta = parts.length > 0 ? ` ${parts.join(' | ')}` : '';
-      const quote = r.text ? `: "${r.text}"` : '';
-      if (meta || quote) {
-        replyCtx = `[回复${meta}${quote}]\n`;
-      }
-    }
-    return `[${payload.source} | ${localTime} ${tz} (${offset})]\n${replyCtx}${payload.text ?? ''}`;
   }
 
   /**
