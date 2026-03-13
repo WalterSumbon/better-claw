@@ -234,7 +234,7 @@ function buildQueryOptions(
     sandbox: buildSandboxSettings(userId),
     env: sdkEnv,
     mcpServers: {
-      'better-claw': createAppMcpServer(),
+      'better-claw': createAppMcpServer(userId),
       // 外部 MCP servers 注入 BETTER_CLAW_USER_ID 环境变量，实现多用户感知。
       // project/local 级 MCP servers（user 级由 SDK 通过 settingSources: ['user'] 自行加载）。
       ...injectUserEnvToMcpServers(getProjectLocalSettings().mcpServers, userId),
