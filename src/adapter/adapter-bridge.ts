@@ -81,8 +81,11 @@ export class AdapterBridge {
   private async handleInbound(msg: InboundMessage): Promise<void> {
     const log = getLogger();
 
-    // 1. ACK（Telegram 防重投递）。立即 ACK，不等处理完。
-    await msg.ack?.();
+    // 1. ACK（Telegram 防重投递）。Fire-and-forget，不阻塞消息处理。
+    msg.ack?.().catch((err) => {
+      const ackLog = getLogger();
+      ackLog.warn({ err, platform: msg.platform }, 'ACK failed (non-blocking)');
+    });
 
     // 2. /bind 命令在用户解析之前处理（因为未绑定用户也能执行）。
     if (msg.isCommand && msg.commandName === 'bind') {

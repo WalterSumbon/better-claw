@@ -1,6 +1,4 @@
 import {
-  query,
-  type Query,
   type SDKMessage,
   type SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
@@ -24,6 +22,7 @@ import {
 import { getUserWorkspacePath, readUserMcpServers } from '../user/store.js';
 import { buildCanUseTool, buildSandboxSettings, resolveUserPermissions } from './permissions.js';
 import { getProjectLocalSettings } from '../config/claude-settings.js';
+import { AgentProcess, type QueryOptions } from './agent-process.js';
 
 /**
  * 为外部 MCP servers 注入用户 ID 环境变量。
@@ -46,16 +45,20 @@ function injectUserEnvToMcpServers<T extends Record<string, { env?: Record<strin
   return result as T;
 }
 
-/** 每个用户的 agent 会话状态（内存中）。 */
-interface AgentSession {
+/** 每个用户的 agent 状态（内存中）。 */
+interface UserAgentState {
   /** 本地会话 ID。 */
   localSessionId: string | null;
   /** 当前 SDK session ID（用于 resume）。 */
   sdkSessionId: string | null;
-  /** 当前活跃的 Query 实例。 */
-  activeQuery: Query | null;
+  /** 持久化 SDK 子进程。 */
+  process: AgentProcess;
+  /** 是否正在处理消息（用于 busy 检查和 interrupt 判断）。 */
+  processing: boolean;
   /** 当前查询是否被用户主动中断（/stop）。 */
   interrupted: boolean;
+  /** SDK stderr 最后 2000 字符（用于错误诊断）。 */
+  lastStderr: string;
 }
 
 /** 用户通过 /stop 主动中断时抛出的错误。 */
@@ -86,37 +89,31 @@ export class RateLimitError extends Error {
   }
 }
 
-/** 用户 ID → 会话状态映射。 */
-const sessions = new Map<string, AgentSession>();
+/** 用户 ID → agent 状态映射。 */
+const states = new Map<string, UserAgentState>();
 
 /**
- * 创建新的 MCP 服务器实例。
- *
- * 每次 query() 调用都需要新实例，因为 SDK 会对 transport 调用 connect()，
- * 而同一个 Protocol transport 不能被多次 connect。
- * createAppMcpServer() 本身很轻量（仅构造对象 + 注册工具），无性能问题。
- */
-
-/**
- * 获取或创建用户的内存会话状态。
+ * 获取或创建用户的 agent 状态。
  *
  * @param userId - 用户 ID。
- * @returns 会话状态对象。
+ * @returns agent 状态对象。
  */
-function getSession(userId: string): AgentSession {
-  let session = sessions.get(userId);
-  if (!session) {
+function getState(userId: string): UserAgentState {
+  let state = states.get(userId);
+  if (!state) {
     // 尝试从磁盘加载持久化的会话。
     const persisted = readActiveSession(userId);
-    session = {
+    state = {
       localSessionId: persisted?.localId ?? null,
       sdkSessionId: persisted?.sdkSessionId ?? null,
-      activeQuery: null,
+      process: new AgentProcess(userId),
+      processing: false,
       interrupted: false,
+      lastStderr: '',
     };
-    sessions.set(userId, session);
+    states.set(userId, state);
   }
-  return session;
+  return state;
 }
 
 /**
@@ -208,67 +205,25 @@ export function buildSdkEnv(userId: string, config: AppConfig): Record<string, s
 }
 
 /**
- * 向 agent 发送消息并流式接收响应。
- *
- * 会话管理逻辑：
- * 1. 发送前检查是否需要轮转（时间间隔 / 轮次阈值）。
- * 2. 如需轮转，归档旧会话并创建新会话。
- * 3. 发送后更新会话元数据和对话记录。
+ * 构建传给 SDK query() 的完整选项。
  *
  * @param userId - 用户 ID。
- * @param message - 用户消息文本。
- * @param onMessage - 每条 SDK 消息的回调。
- * @param sendFile - 可选的文件发送回调，供 MCP 工具使用。
- * @returns 最终结果消息。
+ * @param config - 应用配置。
+ * @param state - 用户 agent 状态。
+ * @param resume - 是否设置 resume（传 SDK session ID，或 null 表示不 resume）。
+ * @returns QueryOptions 对象。
  */
-export async function sendToAgent(
+function buildQueryOptions(
   userId: string,
-  message: string,
-  onMessage: (msg: SDKMessage) => void,
-  sendFile?: (filePath: string, options?: SendFileOptions) => Promise<void>,
-  notifyUser?: (text: string) => Promise<void>,
-): Promise<SDKResultMessage> {
-  const log = getLogger();
-  const config = getConfig();
-
-  // ── 会话管理：确保有活跃会话，必要时自动轮转 ──
-  const { session: activeSession, rotated, reason } = await ensureActiveSession(userId);
-
-  if (rotated) {
-    log.info(
-      { userId, reason, newLocalId: activeSession.localId },
-      'Session auto-rotated before query',
-    );
-    // 向用户推送自动轮转通知（如果配置启用）。
-    if (config.session.notifyContextEvents && notifyUser) {
-      const reasonLabel = reason === 'timeout' ? '闲置超时' : 'context 容量达到阈值';
-      notifyUser(`🔄 Session 已自动轮转（${reasonLabel}）→ ${activeSession.localId}`);
-    }
-  }
-
-  // 同步内存状态。
-  const session = getSession(userId);
-  session.localSessionId = activeSession.localId;
-  session.sdkSessionId = activeSession.sdkSessionId;
-
-  // 如果发生了轮转，清除内存中的 SDK session ID（新会话不 resume）。
-  if (rotated) {
-    session.sdkSessionId = null;
-  }
-
-  // 重置中断标志。
-  session.interrupted = false;
-
-  log.info({ userId, messageLength: message.length }, 'Sending message to agent');
-
+  config: AppConfig,
+  state: UserAgentState,
+  resume: string | null,
+): QueryOptions {
   const systemPrompt = buildSystemPrompt(userId);
-
-  // 构建传递给 SDK subprocess 的环境变量（非 admin 用户仅保留白名单）。
   const sdkEnv = buildSdkEnv(userId, config);
-
   const permissionMode = config.permissionMode as 'default' | 'acceptEdits' | 'bypassPermissions';
 
-  const options: Parameters<typeof query>[0]['options'] = {
+  const options: QueryOptions = {
     systemPrompt,
     model: config.anthropic.model,
     permissionMode,
@@ -284,7 +239,6 @@ export async function sendToAgent(
       // project/local 级 MCP servers（user 级由 SDK 通过 settingSources: ['user'] 自行加载）。
       ...injectUserEnvToMcpServers(getProjectLocalSettings().mcpServers, userId),
       // per-user MCP servers（<userDir>/mcp-servers.json）。
-      // 每次读文件不缓存，天然支持热加载。后加载的优先级更高，可覆盖同名 server。
       ...injectUserEnvToMcpServers(readUserMcpServers(userId), userId),
     },
     allowedTools: [
@@ -318,23 +272,137 @@ export async function sendToAgent(
       'AskUserQuestion',
       ...getProjectLocalSettings().disallowedTools,
     ],
+    ...(resume ? { resume } : {}),
   };
 
   // 捕获 SDK 子进程的 stderr，用于错误诊断。
-  let lastStderr = '';
   options.stderr = (data: string) => {
-    lastStderr += data;
+    state.lastStderr += data;
     // 只保留最后 2000 字符，避免内存膨胀。
-    if (lastStderr.length > 2000) {
-      lastStderr = lastStderr.slice(-2000);
+    if (state.lastStderr.length > 2000) {
+      state.lastStderr = state.lastStderr.slice(-2000);
     }
+    const log = getLogger();
     log.debug({ userId, stderr: data.trim() }, 'SDK stderr');
   };
 
-  // 如果有 SDK session ID，尝试 resume。
-  if (session.sdkSessionId) {
-    options.resume = session.sdkSessionId;
+  return options;
+}
+
+/**
+ * 确保子进程就绪。
+ *
+ * 处理三种情况：
+ * 1. 子进程未启动或已崩溃 → 启动新进程
+ * 2. 发生了 session rotation → 关闭旧进程，启动新进程（不 resume）
+ * 3. 子进程已就绪但 dirty → SDK 重启（兜底时点）
+ * 4. 子进程正在 SDK 重启 → 等待完成（兜底时点，不重复触发）
+ *
+ * @param state - 用户 agent 状态。
+ * @param config - 应用配置。
+ * @param rotated - 是否发生了 session rotation。
+ */
+async function ensureProcessReady(
+  state: UserAgentState,
+  config: AppConfig,
+  rotated: boolean,
+): Promise<void> {
+  const log = getLogger();
+  const proc = state.process;
+  const userId = proc['userId']; // Access via closure — AgentProcess stores userId
+
+  // 如果发生了 rotation 或子进程不存活，需要（重新）启动。
+  if (rotated || !proc.isAlive) {
+    if (proc.isAlive) {
+      log.info({ userId }, 'Closing process due to session rotation');
+      proc.close();
+    }
+    // Rotation 后不 resume；崩溃恢复尝试 resume。
+    const resume = rotated ? null : state.sdkSessionId;
+    const options = buildQueryOptions(userId, config, state, resume);
+    proc.start(options);
+    return;
   }
+
+  // 兜底时点：检查 dirty / restarting 状态。
+  if (proc.sdkRestartState === 'restarting') {
+    log.info({ userId }, 'Process SDK restarting, waiting at fallback checkpoint');
+    await proc.waitForSdkRestart();
+    return;
+  }
+
+  if (proc.sdkRestartState === 'dirty') {
+    log.info({ userId }, 'Process dirty at fallback checkpoint, SDK restarting');
+    const options = buildQueryOptions(userId, config, state, state.sdkSessionId);
+    await proc.sdkRestart(options);
+    return;
+  }
+}
+
+/**
+ * 向 agent 发送消息并流式接收响应。
+ *
+ * 使用持久化子进程（streaming input mode）处理消息。
+ * 子进程在多次消息间保持活跃，避免每条消息都冷启动。
+ *
+ * 会话管理逻辑：
+ * 1. 发送前检查是否需要轮转（时间间隔 / 轮次阈值）。
+ * 2. 如需轮转，归档旧会话并创建新会话，重启子进程。
+ * 3. 发送后更新会话元数据和对话记录。
+ * 4. 消息处理完毕后，如果子进程 dirty，后台触发重启（主时机）。
+ *
+ * @param userId - 用户 ID。
+ * @param message - 用户消息文本。
+ * @param onMessage - 每条 SDK 消息的回调。
+ * @param sendFile - 可选的文件发送回调，供 MCP 工具使用。
+ * @param notifyUser - 可选的通知回调。
+ * @returns 最终结果消息。
+ */
+export async function sendToAgent(
+  userId: string,
+  message: string,
+  onMessage: (msg: SDKMessage) => void,
+  sendFile?: (filePath: string, options?: SendFileOptions) => Promise<void>,
+  notifyUser?: (text: string) => Promise<void>,
+): Promise<SDKResultMessage> {
+  const log = getLogger();
+  const config = getConfig();
+
+  // ── 会话管理：确保有活跃会话，必要时自动轮转 ──
+  const { session: activeSession, rotated, reason } = await ensureActiveSession(userId);
+
+  if (rotated) {
+    log.info(
+      { userId, reason, newLocalId: activeSession.localId },
+      'Session auto-rotated before query',
+    );
+    // 向用户推送自动轮转通知（如果配置启用）。
+    if (config.session.notifyContextEvents && notifyUser) {
+      const reasonLabel = reason === 'timeout' ? '闲置超时' : 'context 容量达到阈值';
+      notifyUser(`🔄 Session 已自动轮转（${reasonLabel}）→ ${activeSession.localId}`);
+    }
+  }
+
+  // 同步内存状态。
+  const state = getState(userId);
+  state.localSessionId = activeSession.localId;
+  state.sdkSessionId = activeSession.sdkSessionId;
+
+  // 如果发生了轮转，清除内存中的 SDK session ID（新会话不 resume）。
+  if (rotated) {
+    state.sdkSessionId = null;
+  }
+
+  // 重置中断标志和 stderr。
+  state.interrupted = false;
+  state.lastStderr = '';
+
+  log.info({ userId, messageLength: message.length }, 'Sending message to agent');
+
+  // ── 确保子进程就绪 ──
+  await ensureProcessReady(state, config, rotated);
+
+  const proc = state.process;
 
   // 在 agentContext 中运行，使 MCP 工具能获取 userId 和 sendFile。
   // 同时跟踪最新的 input_tokens（反映当前 context 大小）。
@@ -344,14 +412,15 @@ export async function sendToAgent(
   const collectedBlocks: ConversationBlock[] = [];
 
   /**
-   * 执行一次 agent 查询，流式处理所有 SDK 消息。
+   * 执行一次 turn：推送消息到子进程，流式读取响应直到 result。
    *
-   * @param queryOptions - 传给 SDK query() 的选项。
+   * 子进程保持活跃——只是当前 turn 结束，不关闭子进程。
+   *
+   * @param prompt - 用户消息文本。
    * @returns 最终结果消息。
    */
-  async function executeQuery(prompt: string, queryOptions: typeof options): Promise<SDKResultMessage> {
-    const q = query({ prompt, options: queryOptions });
-    session.activeQuery = q;
+  async function executeTurn(prompt: string): Promise<SDKResultMessage> {
+    state.processing = true;
 
     let result: SDKResultMessage | null = null;
     let midQueryRotationTriggered = false;
@@ -366,7 +435,17 @@ export async function sendToAgent(
     const ctxWindow = persistedSession?.contextWindowTokens ?? 0;
 
     try {
-      for await (const msg of q) {
+      // 推送用户消息到子进程。
+      proc.pushMessage(prompt);
+
+      // 逐条读取 SDK 响应（手动 .next()，不用 for-await，避免 break 关闭 generator）。
+      while (true) {
+        const msg = await proc.nextMessage();
+        if (!msg) {
+          // 子进程退出（crash 或正常结束）。
+          break;
+        }
+
         // 记录每条 SDK 消息的类型和关键信息，便于调试。
         {
           const m = msg as Record<string, unknown>;
@@ -411,7 +490,8 @@ export async function sendToAgent(
 
         // 捕获 session_id 并更新到活跃会话。
         if ('session_id' in msg && msg.session_id) {
-          session.sdkSessionId = msg.session_id;
+          state.sdkSessionId = msg.session_id;
+          proc.sdkSessionId = msg.session_id;
           // 更新持久化的活跃会话中的 SDK session ID。
           const currentActive = readActiveSession(userId);
           if (currentActive) {
@@ -453,7 +533,7 @@ export async function sendToAgent(
               );
               midQueryRotationTriggered = true;
               // 通知用户 hard 阈值触发（通知在轮转完成后由外层发送）。
-              await q.interrupt();
+              await proc.interrupt();
               break;
             } else if (contextRatio >= softRatio && !softRotationStarted && !getBgRotation(userId)) {
               // Soft 阈值：启动后台准备。先更新持久化 session 的 contextTokens 以反映真实值。
@@ -536,7 +616,7 @@ export async function sendToAgent(
                 userId,
                 trigger: sysMsg.compact_metadata?.trigger,
                 preTokens: sysMsg.compact_metadata?.pre_tokens,
-                localSessionId: session.localSessionId,
+                localSessionId: state.localSessionId,
               },
               'SDK compact boundary detected',
             );
@@ -548,7 +628,7 @@ export async function sendToAgent(
             }
           }
           if (sysMsg.subtype === 'status' && sysMsg.status === 'compacting') {
-            log.info({ userId, localSessionId: session.localSessionId }, 'SDK auto-compact in progress');
+            log.info({ userId, localSessionId: state.localSessionId }, 'SDK auto-compact in progress');
           }
         }
 
@@ -556,14 +636,15 @@ export async function sendToAgent(
 
         if (isResultMessage(msg)) {
           result = msg;
+          break; // Turn 结束，子进程保持活跃。
         }
       }
     } finally {
-      session.activeQuery = null;
+      state.processing = false;
     }
 
     // 用户主动中断优先于 mid-query 轮转。
-    if (session.interrupted) {
+    if (state.interrupted) {
       throw new AgentInterruptedError();
     }
 
@@ -590,20 +671,21 @@ export async function sendToAgent(
     while (true) {
       try {
         try {
-          return await executeQuery(currentPrompt, options);
+          return await executeTurn(currentPrompt);
         } catch (err) {
           if (err instanceof AgentInterruptedError || err instanceof MidQueryRotationNeeded) throw err;
-          // 如果使用了 resume 且进程崩溃，清除 session ID 后重试（不 resume）。
-          if (options.resume) {
+          // 子进程崩溃：清除 session ID 后重启并重试。
+          if (!proc.isAlive) {
             const errMsg = err instanceof Error ? err.message : String(err);
             log.warn(
-              { userId, sdkSessionId: options.resume, error: errMsg, stderr: lastStderr.trim() || undefined },
-              'Agent query failed with resume, retrying without resume',
+              { userId, sdkSessionId: state.sdkSessionId, error: errMsg, stderr: state.lastStderr.trim() || undefined },
+              'Agent process crashed, restarting without resume',
             );
-            lastStderr = '';
+            state.lastStderr = '';
 
             // 清除内存和持久化的 SDK session ID。
-            session.sdkSessionId = null;
+            state.sdkSessionId = null;
+            proc.sdkSessionId = null;
             const currentActive = readActiveSession(userId);
             if (currentActive) {
               currentActive.sdkSessionId = null;
@@ -611,20 +693,21 @@ export async function sendToAgent(
               writeActiveSession(userId, currentActive);
             }
 
-            const retryOptions = { ...options };
-            delete retryOptions.resume;
-            return await executeQuery(currentPrompt, retryOptions);
+            // 重新启动子进程（不 resume）。
+            const retryOptions = buildQueryOptions(userId, config, state, null);
+            proc.start(retryOptions);
+            return await executeTurn(currentPrompt);
           }
-          // 非 resume 场景，附加 stderr 后抛出。
-          if (lastStderr.trim()) {
+          // 子进程仍然存活但 turn 失败（SDK 错误等），附加 stderr 后抛出。
+          if (state.lastStderr.trim()) {
             const errMsg = err instanceof Error ? err.message : String(err);
-            log.error({ userId, error: errMsg, stderr: lastStderr.trim() }, 'Agent query failed');
+            log.error({ userId, error: errMsg, stderr: state.lastStderr.trim() }, 'Agent turn failed');
           }
           throw err;
         }
       } catch (err) {
         if (err instanceof MidQueryRotationNeeded) {
-          // ── Mid-query 轮转：保存部分对话 → 轮转 → 续接 ──
+          // ── Mid-query 轮转：保存部分对话 → 轮转 → 重启子进程 → 续接 ──
           const partialResponse = collectedBlocks
             .filter(b => b.type === 'text')
             .map(b => b.text)
@@ -647,18 +730,19 @@ export async function sendToAgent(
           }
 
           // 更新内存状态。
-          session.localSessionId = newSession.localId;
-          session.sdkSessionId = null;
+          state.localSessionId = newSession.localId;
+          state.sdkSessionId = null;
           currentSessionLocalId = newSession.localId;
 
           // 重置采集状态。
           collectedBlocks.length = 0;
           lastInputTokens = 0;
-          lastStderr = '';
+          state.lastStderr = '';
 
-          // 更新 query 选项：新 system prompt、不 resume。
-          options.systemPrompt = buildSystemPrompt(userId);
-          delete options.resume;
+          // 重启子进程（新 system prompt，不 resume）。
+          const newOptions = buildQueryOptions(userId, config, state, null);
+          proc.close();
+          proc.start(newOptions);
 
           // 续接提示。
           currentPrompt = '上一个会话因 context 容量到达上限被自动轮转。请根据 system prompt 中 "Carried Over from Previous Session" 部分的上下文，继续完成之前未完成的任务。不要解释发生了什么，直接继续工作。';
@@ -677,6 +761,15 @@ export async function sendToAgent(
       }
     }
   });
+
+  // ── 主时机：消息处理完毕后，如果子进程 dirty，后台 SDK 重启（隐藏延迟）──
+  if (proc.sdkRestartState === 'dirty') {
+    log.info({ userId }, 'Post-message SDK restart triggered (primary checkpoint)');
+    const restartOptions = buildQueryOptions(userId, config, state, state.sdkSessionId);
+    proc.sdkRestart(restartOptions).catch(err => {
+      log.error({ userId, err }, 'Background SDK restart failed');
+    });
+  }
 
   // ── 会话管理：更新对话记录和元数据 ──
   // 使用查询开始时捕获的 localSessionId，确保即使 session_new 工具
@@ -709,8 +802,8 @@ export async function sendToAgent(
   log.info(
     {
       userId,
-      localSessionId: session.localSessionId,
-      sdkSessionId: session.sdkSessionId,
+      localSessionId: state.localSessionId,
+      sdkSessionId: state.sdkSessionId,
       costUsd: resultMessage.total_cost_usd,
       turns: resultMessage.num_turns,
       durationMs: resultMessage.duration_ms,
@@ -724,15 +817,17 @@ export async function sendToAgent(
 /**
  * 中断指定用户的 agent 执行。
  *
+ * 只中断当前 turn，子进程保持活跃。
+ *
  * @param userId - 用户 ID。
  */
 export async function interruptAgent(userId: string): Promise<void> {
-  const session = getSession(userId);
-  if (session.activeQuery) {
+  const state = getState(userId);
+  if (state.processing && state.process.isAlive) {
     const log = getLogger();
     log.info({ userId }, 'Interrupting agent');
-    session.interrupted = true;
-    await session.activeQuery.interrupt();
+    state.interrupted = true;
+    await state.process.interrupt();
   }
 }
 
@@ -743,20 +838,41 @@ export async function interruptAgent(userId: string): Promise<void> {
  * @returns 是否正在执行。
  */
 export function isAgentBusy(userId: string): boolean {
-  const session = sessions.get(userId);
-  return session?.activeQuery !== null;
+  const state = states.get(userId);
+  return state?.processing ?? false;
 }
 
 /**
  * 手动重置用户的 agent 会话（供 /new 命令和 MCP 工具调用）。
- * 清除内存中的 session 状态，使下一次查询时创建新会话。
+ * 关闭子进程并清除内存中的 session 状态，使下一次查询时创建新会话。
  *
  * @param userId - 用户 ID。
  */
 export function resetAgentSession(userId: string): void {
-  const session = sessions.get(userId);
-  if (session) {
-    session.localSessionId = null;
-    session.sdkSessionId = null;
+  const state = states.get(userId);
+  if (state) {
+    state.process.close();
+    state.localSessionId = null;
+    state.sdkSessionId = null;
   }
+}
+
+/**
+ * 获取指定用户的 AgentProcess 实例（供 config watch 等外部模块使用）。
+ *
+ * @param userId - 用户 ID。
+ * @returns AgentProcess 实例，如果用户无状态则返回 undefined。
+ */
+export function getAgentProcess(userId: string): AgentProcess | undefined {
+  return states.get(userId)?.process;
+}
+
+/**
+ * 获取所有活跃用户的 AgentProcess 实例。
+ * 用于批量操作，如全局 skill 变更时标记所有进程 dirty。
+ *
+ * @returns [userId, AgentProcess] 数组。
+ */
+export function getAllAgentProcesses(): [string, AgentProcess][] {
+  return Array.from(states.entries()).map(([userId, state]) => [userId, state.process]);
 }

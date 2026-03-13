@@ -32,7 +32,7 @@ vi.mock('../../src/user/store.js', () => ({
 // Mock timezone utils
 vi.mock('../../src/utils/timezone.js', () => ({
   resolveTimezone: () => 'Asia/Shanghai',
-  formatLocalTime: () => '2026-03-12 16:00',
+  formatLocalTime: () => '2026-03-12 16:00:00',
   getUtcOffset: () => 'UTC+8',
 }));
 

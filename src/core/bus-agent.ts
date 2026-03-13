@@ -354,7 +354,7 @@ export class BusAgent {
   /**
    * 为消息添加信封（平台来源、时间戳、时区）。
    *
-   * 格式：[telegram | 2026-03-12 15:06 Asia/Shanghai (UTC+8)]
+   * 格式：[telegram | 2026-03-12 15:06:32 Asia/Shanghai (UTC+8)]
    */
   private buildEnvelope(payload: MsgInPayload): string {
     const config = getConfig();
