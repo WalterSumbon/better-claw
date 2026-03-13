@@ -14,7 +14,7 @@
 import type { EventBus, MsgOutPayload, AgentStatePayload, FileAttachment } from '../core/event-bus.js';
 import type { MessageAdapter } from './interface.js';
 import type { InboundMessage } from './types.js';
-import { resolveUser, bindPlatform, getUser } from '../user/manager.js';
+import { resolveUser, bindPlatform, bindPlatformByUserId, getUser } from '../user/manager.js';
 import { getLogger } from '../logger/index.js';
 
 /** 这些 source 的消息需要广播到用户所有已绑定平台（而不仅仅是发送来源平台）。 */
@@ -32,6 +32,14 @@ export class AdapterBridge {
 
   /** typing 刷新定时器（每 4 秒刷新一次 typing 状态）。 */
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+
+  /**
+   * Per-userId 发送队列：保证同一用户的出站消息按 emit 顺序串行投递。
+   * EventBus.emit() 对 async listener 是 fire-and-forget，多次连续 emit msg:out
+   * 会导致 handleMsgOut() 并发执行，异步 I/O（如 Telegram API）竞态造成乱序。
+   * 通过 Promise chain 实现零额外分配的轻量串行化。
+   */
+  private sendQueues = new Map<string, Promise<void>>();
 
   private unsubscribers: Array<() => void> = [];
 
@@ -51,7 +59,7 @@ export class AdapterBridge {
   async start(): Promise<void> {
     // 订阅出站消息和状态事件。
     this.unsubscribers.push(
-      this.bus.on('msg:out', (payload) => this.handleMsgOut(payload)),
+      this.bus.on('msg:out', (payload) => this.enqueueMsgOut(payload)),
       this.bus.on('agent:busy', (payload) => this.handleBusy(payload)),
       this.bus.on('agent:idle', (payload) => this.handleIdle(payload)),
     );
@@ -97,7 +105,25 @@ export class AdapterBridge {
     }
 
     // 3. 用户解析。
-    const userId = resolveUser(msg.platform, msg.platformUserId);
+    let userId = resolveUser(msg.platform, msg.platformUserId);
+
+    // 3a. 自动绑定：平台已验证用户身份（如 agentelegram token-login），直接绑定。
+    if (!userId && msg.externalUserId) {
+      const log = getLogger();
+      const profile = bindPlatformByUserId(
+        msg.externalUserId,
+        msg.platform,
+        msg.platformUserId,
+      );
+      if (profile) {
+        userId = profile.userId;
+        log.info(
+          { userId, platform: msg.platform, platformUserId: msg.platformUserId },
+          'AdapterBridge: auto-bound via externalUserId',
+        );
+      }
+    }
+
     if (!userId) {
       await this.adapter.sendText(
         msg.platformUserId,
@@ -126,6 +152,7 @@ export class AdapterBridge {
       source: this.adapter.platform,
       text: msg.text,
       files,
+      replyTo: msg.replyTo,
     });
 
     log.debug(
@@ -162,6 +189,16 @@ export class AdapterBridge {
 
   // ---- 出站处理 ----
 
+  /**
+   * 将 msg:out 加入 per-userId 队列，保证串行投递。
+   * 被 EventBus fire-and-forget 调用，内部错误已在 handleMsgOut 中 catch。
+   */
+  private enqueueMsgOut(payload: MsgOutPayload): void {
+    const prev = this.sendQueues.get(payload.userId) ?? Promise.resolve();
+    const next = prev.then(() => this.handleMsgOut(payload));
+    this.sendQueues.set(payload.userId, next);
+  }
+
   private async handleMsgOut(payload: MsgOutPayload): Promise<void> {
     // 判断这条消息是否应该由我们投递。
     const isTargeted = payload.target === this.adapter.platform;
@@ -189,6 +226,10 @@ export class AdapterBridge {
             const log = getLogger();
             log.error({ err, platform: this.adapter.platform }, 'Failed to send streaming text');
           });
+        }
+        // Mid-turn final：关闭当前流式消息，下一个 streaming text 会开启新气泡。
+        if (payload.final && this.adapter.onAgentDone) {
+          this.adapter.onAgentDone(platformUserId);
         }
       }
       // 非流式适配器：直接忽略 streaming 事件，等 complete 消息。

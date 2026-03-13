@@ -271,6 +271,23 @@ export class BusAgent {
     const onMessage = (msg: SDKMessage) => {
       const text = this.extractStreamText(msg);
       if (text && text !== lastText) {
+        // 检测新 turn：如果新文本不是旧文本的延伸，说明 SDK 进入了新的 assistant 消息。
+        // 按完整协议关闭上一轮：streaming final → 非流式完整消息，再开启新的流式。
+        if (lastText && !text.startsWith(lastText)) {
+          // 1. 流式结束标记。
+          this.bus.emit('msg:out', {
+            userId: this.userId,
+            target,
+            streaming: true,
+            final: true,
+          });
+          // 2. 上一轮完整消息（非流式适配器靠这条收到文本；流式适配器会 dedup 跳过）。
+          this.bus.emit('msg:out', {
+            userId: this.userId,
+            target,
+            text: lastText,
+          });
+        }
         lastText = text;
         this.bus.emit('msg:out', {
           userId: this.userId,
@@ -368,7 +385,22 @@ export class BusAgent {
     const localTime = formatLocalTime(now, tz);
     const offset = getUtcOffset(tz);
 
-    return `[${payload.source} | ${localTime} ${tz} (${offset})]\n${payload.text ?? ''}`;
+    let replyCtx = '';
+    if (payload.replyTo) {
+      const r = payload.replyTo;
+      const parts: string[] = [];
+      if (r.senderName) parts.push(r.senderName);
+      if (r.date) {
+        const replyTime = formatLocalTime(new Date(r.date * 1000), tz);
+        parts.push(replyTime);
+      }
+      const meta = parts.length > 0 ? ` ${parts.join(' | ')}` : '';
+      const quote = r.text ? `: "${r.text}"` : '';
+      if (meta || quote) {
+        replyCtx = `[回复${meta}${quote}]\n`;
+      }
+    }
+    return `[${payload.source} | ${localTime} ${tz} (${offset})]\n${replyCtx}${payload.text ?? ''}`;
   }
 
   /**

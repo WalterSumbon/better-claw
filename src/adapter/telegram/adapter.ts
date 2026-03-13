@@ -118,6 +118,36 @@ export class TelegramAdapter implements MessageAdapter {
     const log = getLogger();
     this.running = true;
 
+    // 提取被回复消息的上下文（reply_to_message）：文本、发送人、时间戳。
+    const extractReplyTo = (ctx: Context): { text?: string; senderName?: string; date?: number } | undefined => {
+      const reply = ctx.message?.reply_to_message;
+      if (!reply) return undefined;
+      // 优先取文本，其次取 caption（图片/视频等媒体消息的描述）。
+      const text = reply.text ?? reply.caption;
+      // 发送者名称：优先 first_name + last_name，其次 username。
+      const from = reply.from;
+      const senderName = from
+        ? (from.first_name + (from.last_name ? ` ${from.last_name}` : '')) || from.username
+        : undefined;
+      // Telegram message.date 是 Unix 时间戳（秒）。
+      const date = reply.date;
+      if (!text && !senderName && !date) return undefined;
+      return { text, senderName, date };
+    };
+
+    // Pre-ack：在处理每个 update 之前先向 Telegram 确认（推进 server-side offset），
+    // 确保即使处理过程中进程退出（如 /restart 命令），该 update 也不会在重启后
+    // 重复投递导致死循环。grammy 的 sequential polling 在执行 handler 期间
+    // 不会发起 getUpdates，因此不会产生 409 并发冲突。
+    this.bot.use(async (ctx, next) => {
+      try {
+        await ctx.api.getUpdates({ offset: ctx.update.update_id + 1, limit: 0, timeout: 0 });
+      } catch (err) {
+        log.warn({ err, updateId: ctx.update.update_id }, 'Pre-ack getUpdates failed (non-fatal)');
+      }
+      await next();
+    });
+
     // 处理文本消息。
     this.bot.on('message:text', async (ctx: Context) => {
       const text = ctx.message?.text;
@@ -149,8 +179,7 @@ export class TelegramAdapter implements MessageAdapter {
         isCommand,
         commandName,
         commandArgs,
-        // 注意：不需要手动 ack。grammy 内部通过 offset 自动确认已处理的 update，
-        // 手动调用 getUpdates 会与 polling loop 产生并发冲突导致 409。
+        replyTo: extractReplyTo(ctx),
       };
 
       try {
@@ -204,6 +233,7 @@ export class TelegramAdapter implements MessageAdapter {
         raw: ctx.message,
         isCommand: false,
         attachments: [attachment],
+        replyTo: extractReplyTo(ctx),
       };
 
       try {
@@ -259,6 +289,7 @@ export class TelegramAdapter implements MessageAdapter {
         raw: ctx.message,
         isCommand: false,
         attachments: [attachment],
+        replyTo: extractReplyTo(ctx),
       };
 
       try {
@@ -315,6 +346,7 @@ export class TelegramAdapter implements MessageAdapter {
         raw: ctx.message,
         isCommand: false,
         attachments: [attachment],
+        replyTo: extractReplyTo(ctx),
       };
 
       try {
@@ -370,6 +402,7 @@ export class TelegramAdapter implements MessageAdapter {
         raw: ctx.message,
         isCommand: false,
         attachments: [attachment],
+        replyTo: extractReplyTo(ctx),
       };
 
       try {
@@ -414,6 +447,7 @@ export class TelegramAdapter implements MessageAdapter {
         raw: ctx.message,
         isCommand: false,
         attachments: [attachment],
+        replyTo: extractReplyTo(ctx),
       };
 
       try {
@@ -478,6 +512,7 @@ export class TelegramAdapter implements MessageAdapter {
         raw: ctx.message,
         isCommand: false,
         attachments: [attachment],
+        replyTo: extractReplyTo(ctx),
       };
 
       try {
@@ -537,6 +572,7 @@ export class TelegramAdapter implements MessageAdapter {
         raw: ctx.message,
         isCommand: false,
         attachments: [attachment],
+        replyTo: extractReplyTo(ctx),
       };
 
       try {
@@ -592,6 +628,7 @@ export class TelegramAdapter implements MessageAdapter {
         raw: ctx.message,
         isCommand: false,
         attachments: [attachment],
+        replyTo: extractReplyTo(ctx),
       };
 
       try {
@@ -622,6 +659,7 @@ export class TelegramAdapter implements MessageAdapter {
         raw: ctx.message,
         isCommand: false,
         attachments: [attachment],
+        replyTo: extractReplyTo(ctx),
       };
 
       try {
@@ -658,6 +696,7 @@ export class TelegramAdapter implements MessageAdapter {
         text: `[用户发送了联系人: ${name}${phoneInfo}]`,
         raw: ctx.message,
         isCommand: false,
+        replyTo: extractReplyTo(ctx),
         attachments: [attachment],
       };
 

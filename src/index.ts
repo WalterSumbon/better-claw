@@ -355,7 +355,9 @@ async function main(): Promise<void> {
     const { AgentelegramAdapter } = await import('./adapter/agentelegram/adapter.js');
     const mgmtUserResolver = () => {
       const allUsers = listUsers();
-      return allUsers.length > 0 ? allUsers[0].userId : null;
+      // 优先选有平台绑定的用户（真实活跃用户），而非测试账号。
+      const bound = allUsers.find((u) => u.bindings && u.bindings.length > 0);
+      return (bound ?? allUsers[0])?.userId ?? null;
     };
     const atAdapter = await AgentelegramAdapter.create(config.agentelegram, mgmtUserResolver);
     const atBridge = new AdapterBridge(atAdapter, bus);
