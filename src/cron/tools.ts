@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { agentContext } from '../core/agent-context.js';
+import { resolveUserId } from '../core/agent-context.js';
 import {
   createCronTask,
   listCronTasks,
@@ -9,23 +9,23 @@ import {
 } from './scheduler.js';
 
 /**
- * 获取当前 agent 上下文中的用户 ID。
+ * 创建所有 cron MCP 工具。
  *
- * @returns 用户 ID。
- * @throws 未在 agentContext 内调用时抛出错误。
+ * 通过工厂函数接收 fallbackUserId，避免依赖 AsyncLocalStorage
+ * 在 SDK tool call 链路中可能断裂的问题。
+ *
+ * @param fallbackUserId - 工厂创建时捕获的用户 ID（闭包 fallback）。
  */
-function getCurrentUserId(): string {
-  const store = agentContext.getStore();
-  if (!store) {
-    throw new Error('cron tool called outside of agent context');
+export function createCronTools(fallbackUserId: string) {
+  /** 解析当前用户 ID（AsyncLocalStorage 优先，fallback 到闭包）。 */
+  function getCurrentUserId(): string {
+    return resolveUserId(fallbackUserId);
   }
-  return store.userId;
-}
 
-/** MCP 工具：cron_create。创建定时任务。 */
-export const cronCreateTool = tool(
-  'cron_create',
-  `Create a scheduled (cron) task for the user.
+  /** MCP 工具：cron_create。创建定时任务。 */
+  const cronCreateTool = tool(
+    'cron_create',
+    `Create a scheduled (cron) task for the user.
 
 The task will run at the specified schedule and send the prompt to the agent.
 The agent's response will be broadcast to all platforms the user has bound.
@@ -43,162 +43,165 @@ For example, if the user wants 9:00 AM Beijing time, use "0 9 * * *".
 
 When the user says something like "remind me to drink water every morning at 9",
 create a cron task with an appropriate schedule and prompt.`,
-  {
-    schedule: z.string().describe('Cron expression (e.g., "0 9 * * *" for daily at 9 AM). Uses local time in the specified timezone.'),
-    description: z.string().describe('Human-readable description of what this task does.'),
-    prompt: z.string().describe('The prompt to send to the agent when the task triggers.'),
-    once: z.boolean().optional().describe('If true, the task will auto-disable after executing once.'),
-    timezone: z.string().optional().describe('IANA timezone string (e.g., "Asia/Shanghai", "America/New_York", "Europe/London"). Defaults to "Asia/Shanghai" if not specified. Check user core memory for their preferred timezone.'),
-  },
-  async (args) => {
-    const userId = getCurrentUserId();
-    const task = createCronTask(userId, args.schedule, args.description, args.prompt, args.once, args.timezone);
+    {
+      schedule: z.string().describe('Cron expression (e.g., "0 9 * * *" for daily at 9 AM). Uses local time in the specified timezone.'),
+      description: z.string().describe('Human-readable description of what this task does.'),
+      prompt: z.string().describe('The prompt to send to the agent when the task triggers.'),
+      once: z.boolean().optional().describe('If true, the task will auto-disable after executing once.'),
+      timezone: z.string().optional().describe('IANA timezone string (e.g., "Asia/Shanghai", "America/New_York", "Europe/London"). Defaults to "Asia/Shanghai" if not specified. Check user core memory for their preferred timezone.'),
+    },
+    async (args) => {
+      const userId = getCurrentUserId();
+      const task = createCronTask(userId, args.schedule, args.description, args.prompt, args.once, args.timezone);
 
-    if (!task) {
+      if (!task) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Failed to create cron task. Invalid cron expression: "${args.schedule}"`,
+            },
+          ],
+        };
+      }
+
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Failed to create cron task. Invalid cron expression: "${args.schedule}"`,
+            text: `Cron task created:\n  ID: ${task.id}\n  Schedule: ${task.schedule}\n  Timezone: ${task.timezone ?? 'Asia/Shanghai'}\n  Description: ${task.description}`,
           },
         ],
       };
-    }
+    },
+  );
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Cron task created:\n  ID: ${task.id}\n  Schedule: ${task.schedule}\n  Timezone: ${task.timezone ?? 'Asia/Shanghai'}\n  Description: ${task.description}`,
-        },
-      ],
-    };
-  },
-);
-
-/** MCP 工具：cron_list。列出用户的所有定时任务。 */
-export const cronListTool = tool(
-  'cron_list',
-  `List all scheduled (cron) tasks for the user.
+  /** MCP 工具：cron_list。列出用户的所有定时任务。 */
+  const cronListTool = tool(
+    'cron_list',
+    `List all scheduled (cron) tasks for the user.
 Returns task ID, schedule, description, enabled status, and creation time.`,
-  {},
-  async () => {
-    const userId = getCurrentUserId();
-    const tasks = listCronTasks(userId);
+    {},
+    async () => {
+      const userId = getCurrentUserId();
+      const tasks = listCronTasks(userId);
 
-    if (tasks.length === 0) {
+      if (tasks.length === 0) {
+        return {
+          content: [
+            { type: 'text' as const, text: 'No scheduled tasks found.' },
+          ],
+        };
+      }
+
+      const lines = tasks.map(
+        (t) =>
+          `- [${t.enabled ? 'ON' : 'OFF'}]${t.once ? ' [ONCE]' : ''} ${t.id}: "${t.description}" (${t.schedule}, tz: ${t.timezone ?? 'Asia/Shanghai'})`,
+      );
+
       return {
         content: [
-          { type: 'text' as const, text: 'No scheduled tasks found.' },
+          {
+            type: 'text' as const,
+            text: `Scheduled tasks:\n${lines.join('\n')}`,
+          },
         ],
       };
-    }
+    },
+  );
 
-    const lines = tasks.map(
-      (t) =>
-        `- [${t.enabled ? 'ON' : 'OFF'}]${t.once ? ' [ONCE]' : ''} ${t.id}: "${t.description}" (${t.schedule}, tz: ${t.timezone ?? 'Asia/Shanghai'})`,
-    );
-
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Scheduled tasks:\n${lines.join('\n')}`,
-        },
-      ],
-    };
-  },
-);
-
-/** MCP 工具：cron_update。更新定时任务。 */
-export const cronUpdateTool = tool(
-  'cron_update',
-  `Update an existing scheduled (cron) task.
+  /** MCP 工具：cron_update。更新定时任务。 */
+  const cronUpdateTool = tool(
+    'cron_update',
+    `Update an existing scheduled (cron) task.
 You can modify the schedule, timezone, description, prompt, or enable/disable the task.
 Use cron_list first to find the task ID.`,
-  {
-    taskId: z.string().describe('The ID of the cron task to update.'),
-    schedule: z.string().optional().describe('New cron expression.'),
-    timezone: z.string().optional().describe('New IANA timezone string (e.g., "Asia/Shanghai", "America/New_York").'),
-    description: z.string().optional().describe('New description.'),
-    prompt: z.string().optional().describe('New prompt.'),
-    enabled: z.boolean().optional().describe('Enable or disable the task.'),
-    once: z.boolean().optional().describe('If true, the task will auto-disable after executing once.'),
-  },
-  async (args) => {
-    const userId = getCurrentUserId();
-    const { taskId, ...updates } = args;
+    {
+      taskId: z.string().describe('The ID of the cron task to update.'),
+      schedule: z.string().optional().describe('New cron expression.'),
+      timezone: z.string().optional().describe('New IANA timezone string (e.g., "Asia/Shanghai", "America/New_York").'),
+      description: z.string().optional().describe('New description.'),
+      prompt: z.string().optional().describe('New prompt.'),
+      enabled: z.boolean().optional().describe('Enable or disable the task.'),
+      once: z.boolean().optional().describe('If true, the task will auto-disable after executing once.'),
+    },
+    async (args) => {
+      const userId = getCurrentUserId();
+      const { taskId, ...updates } = args;
 
-    // 过滤掉 undefined 值。
-    const cleanUpdates: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(updates)) {
-      if (value !== undefined) {
-        cleanUpdates[key] = value;
+      // 过滤掉 undefined 值。
+      const cleanUpdates: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(updates)) {
+        if (value !== undefined) {
+          cleanUpdates[key] = value;
+        }
       }
-    }
 
-    if (Object.keys(cleanUpdates).length === 0) {
-      return {
-        content: [
-          { type: 'text' as const, text: 'No updates provided.' },
-        ],
-      };
-    }
+      if (Object.keys(cleanUpdates).length === 0) {
+        return {
+          content: [
+            { type: 'text' as const, text: 'No updates provided.' },
+          ],
+        };
+      }
 
-    const task = updateCronTask(userId, taskId, cleanUpdates as Parameters<typeof updateCronTask>[2]);
+      const task = updateCronTask(userId, taskId, cleanUpdates as Parameters<typeof updateCronTask>[2]);
 
-    if (!task) {
+      if (!task) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Failed to update task "${taskId}". Task not found or invalid cron expression.`,
+            },
+          ],
+        };
+      }
+
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Failed to update task "${taskId}". Task not found or invalid cron expression.`,
+            text: `Task updated:\n  ID: ${task.id}\n  Schedule: ${task.schedule}\n  Timezone: ${task.timezone ?? 'Asia/Shanghai'}\n  Description: ${task.description}\n  Enabled: ${task.enabled}`,
           },
         ],
       };
-    }
+    },
+  );
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Task updated:\n  ID: ${task.id}\n  Schedule: ${task.schedule}\n  Timezone: ${task.timezone ?? 'Asia/Shanghai'}\n  Description: ${task.description}\n  Enabled: ${task.enabled}`,
-        },
-      ],
-    };
-  },
-);
-
-/** MCP 工具：cron_delete。删除定时任务。 */
-export const cronDeleteTool = tool(
-  'cron_delete',
-  `Delete a scheduled (cron) task.
+  /** MCP 工具：cron_delete。删除定时任务。 */
+  const cronDeleteTool = tool(
+    'cron_delete',
+    `Delete a scheduled (cron) task.
 Use cron_list first to find the task ID.`,
-  {
-    taskId: z.string().describe('The ID of the cron task to delete.'),
-  },
-  async (args) => {
-    const userId = getCurrentUserId();
-    const deleted = deleteCronTask(userId, args.taskId);
+    {
+      taskId: z.string().describe('The ID of the cron task to delete.'),
+    },
+    async (args) => {
+      const userId = getCurrentUserId();
+      const deleted = deleteCronTask(userId, args.taskId);
 
-    if (!deleted) {
+      if (!deleted) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Task "${args.taskId}" not found.`,
+            },
+          ],
+        };
+      }
+
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Task "${args.taskId}" not found.`,
+            text: `Task "${args.taskId}" deleted.`,
           },
         ],
       };
-    }
+    },
+  );
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Task "${args.taskId}" deleted.`,
-        },
-      ],
-    };
-  },
-);
+  return { cronCreateTool, cronListTool, cronUpdateTool, cronDeleteTool };
+}

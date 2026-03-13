@@ -16,3 +16,17 @@ export interface AgentContextStore {
  * 在调用 query() 前通过 agentContext.run({ userId }, callback) 设置。
  */
 export const agentContext = new AsyncLocalStorage<AgentContextStore>();
+
+/**
+ * 解析当前用户 ID：优先从 AsyncLocalStorage 读取，fallback 到传入的 userId。
+ *
+ * 当 SDK 分发 MCP tool call 时，AsyncLocalStorage 上下文可能断裂
+ * （SDK 内部事件处理链路不保证 async context 传播），
+ * 此时 fallback 到工厂函数传入的 userId。
+ *
+ * @param fallbackUserId - 工厂函数创建时捕获的用户 ID。
+ * @returns 用户 ID。
+ */
+export function resolveUserId(fallbackUserId: string): string {
+  return agentContext.getStore()?.userId ?? fallbackUserId;
+}
