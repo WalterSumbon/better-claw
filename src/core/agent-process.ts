@@ -115,6 +115,8 @@ export class AgentProcess {
   private _sdkRestartState: SdkRestartState = 'clean';
   private _sdkRestartPromise: Promise<void> | null = null;
   private _startOptions: QueryOptions | null = null;
+  /** transport onExit 钩子的清理函数。 */
+  private _transportExitCleanup: (() => void) | null = null;
 
   constructor(private userId: string) {}
 
@@ -160,6 +162,18 @@ export class AgentProcess {
     this._query = query({ prompt: this.inputChannel.iterable, options });
     this._sdkRestartState = 'clean';
 
+    // Hook into transport exit to close InputChannel preemptively.
+    //
+    // 当子进程退出时，SDK 的 streamInput() 可能仍在 for-await 我们的 InputChannel。
+    // 如果此时 push 新消息，streamInput 会调用 transport.write()，但 transport 已死，
+    // 抛出 "ProcessTransport is not ready for writing"。由于 SDK 内部 streamInput() 的
+    // promise 是 fire-and-forget（无 .catch()），这个错误会变成 unhandled rejection，
+    // 直接 crash 整个 Node 进程。
+    //
+    // 通过在 transport exit 时关闭 InputChannel，streamInput 的 for-await 会自然结束，
+    // 避免写入死掉的 transport。
+    this.setupTransportExitHook();
+
     log.info({ userId: this.userId }, 'AgentProcess started (streaming input mode)');
   }
 
@@ -172,6 +186,19 @@ export class AgentProcess {
   pushMessage(content: string): void {
     if (!this.inputChannel || !this._query) {
       throw new Error('AgentProcess not started — call start() first');
+    }
+
+    // 检查 transport 是否仍然就绪。
+    // 子进程可能在两次消息之间退出（返回 0-cost result 后静默死亡），
+    // 此时 _query 仍然存在（因为没人调用 nextMessage() 来发现退出），
+    // 但 transport 已经标记 ready=false。
+    // 直接推送会导致 streamInput 写入死 transport → unhandled rejection → crash。
+    const transport = (this._query as unknown as { transport?: { isReady?: () => boolean } }).transport;
+    if (transport?.isReady && !transport.isReady()) {
+      const log = getLogger();
+      log.warn({ userId: this.userId }, 'Transport not ready in pushMessage, subprocess has exited');
+      this.handleProcessExit();
+      throw new Error('AgentProcess subprocess has exited');
     }
 
     const userMsg: SDKUserMessage = {
@@ -226,6 +253,12 @@ export class AgentProcess {
    * 关闭子进程，释放所有资源。
    */
   close(): void {
+    // 清理 transport exit hook。
+    if (this._transportExitCleanup) {
+      this._transportExitCleanup();
+      this._transportExitCleanup = null;
+    }
+
     if (this._query) {
       this.inputChannel?.end();
       this._query.close();
@@ -368,10 +401,45 @@ export class AgentProcess {
     this.start(options);
   }
 
+  /**
+   * 设置 transport exit hook。
+   *
+   * 通过 SDK 内部的 transport.onExit() 监听子进程退出事件，
+   * 在退出时关闭 InputChannel，防止 streamInput 写入死掉的 transport。
+   *
+   * 不在此处调用 handleProcessExit()：如果 executeTurn 正在读取消息，
+   * 应由 nextMessage() 在 drain 完残余消息后自行处理退出。
+   */
+  private setupTransportExitHook(): void {
+    if (!this._query) return;
+
+    // 访问 SDK 内部的 transport（Query 未暴露公开 API）。
+    // 这是对 SDK 实现细节的依赖，但这是检测子进程退出的唯一可靠方式。
+    const transport = (this._query as unknown as {
+      transport?: { onExit?: (cb: (err?: Error) => void) => () => void };
+    }).transport;
+    if (!transport?.onExit) return;
+
+    const log = getLogger();
+    this._transportExitCleanup = transport.onExit((err) => {
+      log.warn(
+        { userId: this.userId, error: err?.message },
+        'Transport exit detected, closing input channel to prevent streamInput crash',
+      );
+      // 关闭 InputChannel，让 streamInput 的 for-await 自然结束。
+      this.inputChannel?.end();
+    });
+  }
+
   private handleProcessExit(): void {
     const log = getLogger();
     log.warn({ userId: this.userId }, 'AgentProcess subprocess exited');
     this._query = null;
     this.inputChannel = null;
+    // 清理 transport exit hook（已无意义）。
+    if (this._transportExitCleanup) {
+      this._transportExitCleanup();
+      this._transportExitCleanup = null;
+    }
   }
 }

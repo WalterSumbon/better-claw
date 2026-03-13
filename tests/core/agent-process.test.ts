@@ -125,6 +125,24 @@ const mockedQuery = vi.mocked(query);
 /** 创建一个 mock Query 对象（模拟 SDK 返回的 AsyncGenerator）。 */
 function createMockQuery(messages: Array<Record<string, unknown>> = []) {
   let idx = 0;
+  const exitCallbacks: Array<(err?: Error) => void> = [];
+  const mockTransport = {
+    _ready: true,
+    isReady: vi.fn().mockImplementation(() => mockTransport._ready),
+    onExit: vi.fn().mockImplementation((cb: (err?: Error) => void) => {
+      exitCallbacks.push(cb);
+      return () => {
+        const i = exitCallbacks.indexOf(cb);
+        if (i !== -1) exitCallbacks.splice(i, 1);
+      };
+    }),
+    /** 模拟子进程退出：设置 ready=false 并触发所有 onExit 回调。 */
+    simulateExit: (err?: Error) => {
+      mockTransport._ready = false;
+      exitCallbacks.forEach(cb => cb(err));
+    },
+  };
+
   return {
     next: vi.fn().mockImplementation(() => {
       if (idx < messages.length) {
@@ -138,6 +156,7 @@ function createMockQuery(messages: Array<Record<string, unknown>> = []) {
     interrupt: vi.fn().mockResolvedValue(undefined),
     setMcpServers: vi.fn().mockResolvedValue({ added: [], removed: [], errors: {} }),
     [Symbol.asyncIterator]: function () { return this; },
+    transport: mockTransport,
   };
 }
 
@@ -323,6 +342,58 @@ describe('AgentProcess', () => {
       // but we verify it doesn't throw and the process is still alive.
       expect(() => proc.pushMessage('hello world')).not.toThrow();
       expect(proc.isAlive).toBe(true);
+    });
+
+    it('should throw and mark process dead when transport is not ready', () => {
+      const mockQ = createMockQuery();
+      mockedQuery.mockReturnValue(mockQ as any);
+      proc.start({} as any);
+
+      // 模拟子进程退出（transport 变为 not ready）。
+      mockQ.transport._ready = false;
+
+      expect(() => proc.pushMessage('hello')).toThrow('AgentProcess subprocess has exited');
+      expect(proc.isAlive).toBe(false);
+    });
+  });
+
+  describe('transport exit hook', () => {
+    it('should register onExit callback on start', () => {
+      const mockQ = createMockQuery();
+      mockedQuery.mockReturnValue(mockQ as any);
+      proc.start({} as any);
+
+      expect(mockQ.transport.onExit).toHaveBeenCalledOnce();
+    });
+
+    it('should close input channel when transport exits (preventing streamInput crash)', () => {
+      const mockQ = createMockQuery();
+      mockedQuery.mockReturnValue(mockQ as any);
+      proc.start({} as any);
+
+      // pushMessage should work before exit.
+      expect(() => proc.pushMessage('before exit')).not.toThrow();
+
+      // 模拟子进程退出。
+      mockQ.transport.simulateExit(new Error('process exited with code 1'));
+
+      // pushMessage 应该抛出（transport not ready）。
+      expect(() => proc.pushMessage('after exit')).toThrow('AgentProcess subprocess has exited');
+      expect(proc.isAlive).toBe(false);
+    });
+
+    it('should clean up onExit listener on close()', () => {
+      const mockQ = createMockQuery();
+      mockedQuery.mockReturnValue(mockQ as any);
+      proc.start({} as any);
+
+      // onExit 应该注册了一个回调。
+      expect(mockQ.transport.onExit).toHaveBeenCalledOnce();
+
+      proc.close();
+
+      // 关闭后再模拟退出不应导致问题（回调已清除）。
+      mockQ.transport.simulateExit();
     });
   });
 
