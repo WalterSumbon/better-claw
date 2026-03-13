@@ -75,6 +75,8 @@ interface ServerEvent {
   payload?: Record<string, unknown>;
   // message_done
   messageId?: string;
+  // senderExternalUserId (auto-bind support)
+  senderExternalUserId?: string;
 }
 
 /** 每个会话的活跃流式消息状态。 */
@@ -480,6 +482,7 @@ export class AgentelegramAdapter implements MessageAdapter {
       isCommand,
       commandName,
       commandArgs,
+      externalUserId: event.senderExternalUserId,
     };
 
     // Fire-and-forget：EventBus 架构下 handler 立即返回（仅 emit msg:in）。

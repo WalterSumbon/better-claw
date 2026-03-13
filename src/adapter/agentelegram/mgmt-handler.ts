@@ -11,6 +11,7 @@ import { listCronTasks, createCronTask, updateCronTask, deleteCronTask } from '.
 import { getUserSkillIndex } from '../../skills/scanner.js';
 import { getClaudeSettings } from '../../config/claude-settings.js';
 import { readUserMcpServers, getUserDir } from '../../user/store.js';
+import { listUsers } from '../../user/manager.js';
 import type { SkillIndex, SkillNode } from '../../skills/scanner.js';
 
 // ---- 管理协议类型 ----
@@ -29,7 +30,8 @@ export type MgmtAction =
   | 'update_cron'
   | 'delete_cron'
   | 'query_mcp'
-  | 'update_mcp';
+  | 'update_mcp'
+  | 'verify_token';
 
 export interface MgmtRequest {
   type: 'mgmt_request';
@@ -361,6 +363,24 @@ export async function handleMgmtRequest(
           requestId,
           success: true,
           data: { acknowledged: true, note: 'MCP enable/disable not yet supported in Better-Claw' },
+        };
+      }
+
+      case 'verify_token': {
+        const token = payload?.token as string;
+        if (!token) {
+          return { type: 'mgmt_response', requestId, success: false, mgmtError: 'token required' };
+        }
+        const allUsers = listUsers();
+        const matchedUser = allUsers.find((p) => p.token === token);
+        if (!matchedUser) {
+          return { type: 'mgmt_response', requestId, success: false, mgmtError: 'invalid token' };
+        }
+        return {
+          type: 'mgmt_response',
+          requestId,
+          success: true,
+          data: { userId: matchedUser.userId, name: matchedUser.name },
         };
       }
 

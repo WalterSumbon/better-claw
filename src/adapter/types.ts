@@ -30,6 +30,16 @@ export interface InboundMessage {
   commandArgs?: string;
   /** 附件列表（图片、语音、文件等）。 */
   attachments?: Attachment[];
+  /** 外部系统用户 ID（如 Better-Claw userId）。用于自动绑定：当平台已验证用户身份时，跳过手动 /bind。 */
+  externalUserId?: string;
   /** 确认消息已处理（ack）。用于 Telegram long polling 场景，确保 update 不会被重新投递。 */
   ack?: () => Promise<void>;
+  /** 被回复的消息上下文（如 Telegram 的 reply_to_message）。 */
+  replyTo?: {
+    text?: string;
+    /** 被回复消息的发送者名称。 */
+    senderName?: string;
+    /** 被回复消息的发送时间（Unix 时间戳，秒）。 */
+    date?: number;
+  };
 }

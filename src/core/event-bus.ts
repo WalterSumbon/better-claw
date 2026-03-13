@@ -28,6 +28,14 @@ export interface MsgInPayload {
   source: string;
   text?: string;
   files?: FileAttachment[];
+  /** 被回复的消息上下文（如 Telegram reply）。 */
+  replyTo?: {
+    text?: string;
+    /** 被回复消息的发送者名称。 */
+    senderName?: string;
+    /** 被回复消息的发送时间（Unix 时间戳，秒）。 */
+    date?: number;
+  };
 }
 
 export interface MsgOutPayload {

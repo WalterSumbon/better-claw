@@ -117,6 +117,43 @@ export function bindPlatform(
 }
 
 /**
+ * 通过系统用户 ID 直接绑定平台账号（无需 token）。
+ * 用于已验证身份的场景（如 agentelegram token-login 自动绑定）。
+ *
+ * @param userId - Better-Claw 系统用户 ID。
+ * @param platform - 平台名称。
+ * @param platformUserId - 平台用户 ID。
+ * @returns 绑定成功返回用户档案，用户不存在返回 null。
+ */
+export function bindPlatformByUserId(
+  userId: string,
+  platform: PlatformType,
+  platformUserId: string,
+): UserProfile | null {
+  const profile = readProfile(userId);
+  if (!profile) {
+    return null;
+  }
+
+  // 检查是否已绑定。
+  const existing = profile.bindings.find(
+    (b) => b.platform === platform && b.platformUserId === platformUserId,
+  );
+  if (existing) {
+    return profile;
+  }
+
+  profile.bindings.push({
+    platform,
+    platformUserId,
+    boundAt: new Date().toISOString(),
+  });
+  writeProfile(profile);
+  bindingCache.set(bindingKey(platform, platformUserId), profile.userId);
+  return profile;
+}
+
+/**
  * 通过平台信息查找对应的系统用户 ID。
  *
  * @param platform - 平台名称。
