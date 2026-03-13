@@ -1,7 +1,7 @@
-import { join } from 'path';
-import { existsSync, unlinkSync } from 'fs';
+import { join, dirname } from 'path';
+import { existsSync, unlinkSync, mkdirSync, openSync, writeSync, fsyncSync, closeSync } from 'fs';
 import { getUserDir, listUserIds } from '../user/store.js';
-import { readJsonFile, writeJsonFile } from '../utils/file.js';
+import { readJsonFile } from '../utils/file.js';
 
 /** 重启标记文件内容。 */
 export interface RestartMarker {
@@ -27,6 +27,11 @@ function markerPath(userId: string): string {
 /**
  * 写入重启标记。
  *
+ * 使用 openSync + writeSync + fsyncSync 确保数据物理落盘。
+ * writeFileSync 只写入内核缓冲区不调 fsync，如果紧接着
+ * process.exit() 退出，macOS/APFS 可能还没 flush 到磁盘，
+ * 导致重启后 marker 丢失、对话无法恢复。
+ *
  * @param userId - 用户 ID。
  * @param source - 触发来源。
  */
@@ -35,7 +40,15 @@ export function writeRestartMarker(userId: string, source: RestartMarker['source
     timestamp: new Date().toISOString(),
     source,
   };
-  writeJsonFile(markerPath(userId), marker);
+  const filePath = markerPath(userId);
+  mkdirSync(dirname(filePath), { recursive: true });
+  const fd = openSync(filePath, 'w');
+  try {
+    writeSync(fd, JSON.stringify(marker, null, 2));
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
