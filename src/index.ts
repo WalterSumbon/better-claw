@@ -237,12 +237,17 @@ function handlePostRestart(bus: EventBus): void {
       continue;
     }
 
-    const prompt =
-      marker.source === 'mcp_tool'
-        ? '服务已重启完成。请基于之前的对话上下文，简要告知用户重启结果（例如代码修改已生效），并继续完成之前未完成的对话。请用简洁的语言回复。'
-        : '服务已通过 /restart 命令重启完成。请简要告知用户重启成功。';
+    // 系统级消息：立即通知用户重启完成，不经过 agent，零延迟。
+    bus.emit('msg:out', { userId, target: 'system', text: '✅ 重启完成。' });
 
-    bus.emit('msg:in', { userId, source: 'system', text: prompt });
+    // mcp_tool 来源：agent 主动调用 restart 是为了让代码改动生效，需要继续之前的任务。
+    if (marker.source === 'mcp_tool') {
+      bus.emit('msg:in', {
+        userId,
+        source: 'system',
+        text: '服务已重启完成。请基于之前的对话上下文，继续完成之前未完成的任务。不需要告知用户重启成功（系统已自动通知）。',
+      });
+    }
 
     deleteRestartMarker(userId);
     log.info({ userId, source: marker.source }, 'Post-restart conversation resumed');
