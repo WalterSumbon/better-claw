@@ -81,7 +81,7 @@ export function getUtcOffset(tz: string, date: Date = new Date()): string {
  *
  * @param date - 日期对象。
  * @param tz - IANA 时区字符串。
- * @returns 格式化的本地时间字符串，如 "2026-03-10 09:43"。
+ * @returns 格式化的本地时间字符串，如 "2026-03-10 09:43:31"。
  */
 export function formatLocalTime(date: Date, tz: string): string {
   const formatter = new Intl.DateTimeFormat('sv-SE', {
@@ -91,9 +91,10 @@ export function formatLocalTime(date: Date, tz: string): string {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
     hour12: false,
   });
-  // sv-SE locale 产生 "2026-03-10 09:43" 格式。
+  // sv-SE locale 产生 "2026-03-10 09:43:31" 格式。
   return formatter.format(date);
 }
 

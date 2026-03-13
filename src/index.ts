@@ -28,6 +28,7 @@ import {
 } from './core/restart-marker.js';
 import { initScheduler, stopAllJobs } from './cron/scheduler.js';
 import { initSkillIndex } from './skills/scanner.js';
+import { startConfigWatcher, stopConfigWatcher } from './core/config-watcher.js';
 import { handleAdminCommand } from './core/admin-commands.js';
 import { startWebhookServer, stopWebhookServer } from './webhook/server.js';
 import type { WebhookHandler, WebhookNotifyRequest } from './webhook/types.js';
@@ -281,6 +282,9 @@ async function main(): Promise<void> {
   // 3.5. 构建 skill/skillset 索引。
   initSkillIndex(config.skills.paths);
 
+  // 3.6. 启动配置文件监控（skill 目录、MCP 配置、Claude settings）。
+  startConfigWatcher();
+
   // 4. 加载用户绑定缓存。
   loadBindingCache();
   log.info('User binding cache loaded');
@@ -425,6 +429,7 @@ async function main(): Promise<void> {
   // 13. 优雅关闭。
   const shutdown = async () => {
     log.info('Shutting down...');
+    stopConfigWatcher();
     manager.stop();
     stopAllJobs();
     await stopWebhookServer();
