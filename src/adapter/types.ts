@@ -42,4 +42,13 @@ export interface InboundMessage {
     /** 被回复消息的发送时间（Unix 时间戳，秒）。 */
     date?: number;
   };
+  /** 消息发送者信息（平台用户）。 */
+  sender?: {
+    /** 平台用户 ID（如 Telegram from.id）。用于 @mention 等场景。 */
+    platformId: string;
+    /** 显示名称（如 first_name + last_name）。 */
+    name: string;
+    /** 用户名（如 Telegram @username）。 */
+    username?: string;
+  };
 }

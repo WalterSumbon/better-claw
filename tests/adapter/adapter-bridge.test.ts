@@ -17,13 +17,29 @@ vi.mock('../../src/logger/index.js', () => ({
   }),
 }));
 
+vi.mock('../../src/config/index.js', () => ({
+  getConfig: () => ({ messageEnvelope: { enabled: false } }),
+}));
+
+vi.mock('../../src/user/store.js', () => ({
+  readProfile: () => null,
+}));
+
+vi.mock('../../src/utils/timezone.js', () => ({
+  resolveTimezone: () => 'UTC',
+  formatLocalTime: () => '2026-01-01 00:00:00',
+  getUtcOffset: () => 'UTC+0',
+}));
+
 const resolveUserMock = vi.fn();
 const bindPlatformMock = vi.fn();
 const getUserMock = vi.fn();
+const bindPlatformByUserIdMock = vi.fn();
 
 vi.mock('../../src/user/manager.js', () => ({
   resolveUser: (...args: unknown[]) => resolveUserMock(...args),
   bindPlatform: (...args: unknown[]) => bindPlatformMock(...args),
+  bindPlatformByUserId: (...args: unknown[]) => bindPlatformByUserIdMock(...args),
   getUser: (...args: unknown[]) => getUserMock(...args),
 }));
 
@@ -128,6 +144,7 @@ describe('AdapterBridge', () => {
         userId: 'user1',
         source: 'telegram',
         text: 'hello',
+        envelope: 'hello',
         files: undefined,
       });
     });
