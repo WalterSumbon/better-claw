@@ -170,11 +170,7 @@ export class BusAgent {
       const target = cmd.payload.source;
       try {
         await handler(this.userId, cmd.args, (text: string) => {
-          this.bus.emit('msg:out', {
-            userId: this.userId,
-            target,
-            text,
-          });
+          this.bus.emit('msg:out', { userId: this.userId, target, text });
         }, cmd.payload);
       } catch (err) {
         log.error({ err, userId: this.userId, command: cmd.name }, 'Command handler error');
@@ -263,83 +259,56 @@ export class BusAgent {
     target: string,
     _files?: MsgInPayload['files'],
   ): Promise<void> {
+    const userId = this.userId;
     let lastText = '';
 
+    let hadStreaming = false;
+
     const onMessage = (msg: SDKMessage) => {
+      // 流式文本：每次收到新文本就发出 streaming chunk。
       const text = this.extractStreamText(msg);
       if (text && text !== lastText) {
-        // 检测新 turn：如果新文本不是旧文本的延伸，说明 SDK 进入了新的 assistant 消息。
-        // 按完整协议关闭上一轮：streaming final → 非流式完整消息，再开启新的流式。
-        if (lastText && !text.startsWith(lastText)) {
-          // 1. 流式结束标记。
-          this.bus.emit('msg:out', {
-            userId: this.userId,
-            target,
-            streaming: true,
-            final: true,
-          });
-          // 2. 上一轮完整消息（非流式适配器靠这条收到文本；流式适配器会 dedup 跳过）。
-          this.bus.emit('msg:out', {
-            userId: this.userId,
-            target,
-            text: lastText,
-          });
-        }
         lastText = text;
+        hadStreaming = true;
+        this.bus.emit('msg:out', { userId, target, text, streaming: true });
+      }
+
+      // message_stop：SDK 在每条 assistant 消息完成后发送此信号，
+      // 无论 stop_reason 是 tool_use 还是 end_turn。
+      // streaming final 带完整文本供非流式适配器使用，然后重置 lastText。
+      if (
+        msg.type === 'stream_event' &&
+        (msg as { event?: { type?: string } }).event?.type === 'message_stop'
+      ) {
         this.bus.emit('msg:out', {
-          userId: this.userId,
+          userId,
           target,
-          text,
           streaming: true,
+          final: true,
+          ...(lastText ? { text: lastText } : {}),
         });
+        lastText = '';
       }
     };
 
     const sendFile = async (filePath: string, _options?: SendFileOptions) => {
-      this.bus.emit('msg:out', {
-        userId: this.userId,
-        target,
-        files: [{ type: 'document' as const, path: filePath }],
-      });
+      this.bus.emit('msg:out', { userId, target, files: [{ type: 'document' as const, path: filePath }] });
     };
 
     const notifyUser = async (text: string) => {
-      this.bus.emit('msg:out', {
-        userId: this.userId,
-        target,
-        text,
-      });
+      this.bus.emit('msg:out', { userId, target, text });
     };
 
-    const result = await sendToAgent(
-      this.userId,
-      envelopedText,
-      onMessage,
-      sendFile,
-      notifyUser,
-    );
+    const result = await sendToAgent(userId, envelopedText, onMessage, sendFile, notifyUser);
 
-    // 流式结束标记（仅用于 dedup，不携带文本——文本已在最后一次 streaming 事件中发出）。
-    if (lastText) {
-      this.bus.emit('msg:out', {
-        userId: this.userId,
-        target,
-        streaming: true,
-        final: true,
-      });
+    // 只在完全没有流式输出时发 complete（兜底）。
+    if (!hadStreaming) {
+      const fullText =
+        result.subtype === 'success' && typeof result.result === 'string'
+          ? result.result
+          : '[No response]';
+      this.bus.emit('msg:out', { userId, target, text: fullText });
     }
-
-    // 完整消息（非 streaming）。
-    const fullText =
-      result.subtype === 'success' && typeof result.result === 'string'
-        ? result.result
-        : lastText || '[No response]';
-
-    this.bus.emit('msg:out', {
-      userId: this.userId,
-      target,
-      text: fullText,
-    });
   }
 
   // ---- 辅助方法 ----
