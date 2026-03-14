@@ -59,12 +59,37 @@ export interface DigestParams {
 }
 
 /**
+ * 调整切割位置，避免劈开 UTF-16 surrogate pair。
+ *
+ * JavaScript 字符串内部使用 UTF-16 编码，非 BMP 字符（如 emoji）由两个 code unit
+ * 组成：高代理（0xD800-0xDBFF）+ 低代理（0xDC00-0xDFFF）。
+ * String.prototype.slice() 按 code unit 切割，可能将 surrogate pair 从中间劈开，
+ * 产生孤立代理字符，导致 JSON 序列化后 API 返回 "invalid high surrogate" 错误。
+ */
+function safeSliceEnd(content: string, index: number): number {
+  if (index <= 0 || index >= content.length) return index;
+  const code = content.charCodeAt(index - 1);
+  // 如果切割点的前一个字符是高代理（surrogate pair 的前半），后退一位避免劈开。
+  if (code >= 0xD800 && code <= 0xDBFF) return index - 1;
+  return index;
+}
+
+function safeSliceStart(content: string, index: number): number {
+  if (index <= 0 || index >= content.length) return index;
+  const code = content.charCodeAt(index);
+  // 如果切割点的字符是低代理（surrogate pair 的后半），前进一位避免劈开。
+  if (code >= 0xDC00 && code <= 0xDFFF) return index + 1;
+  return index;
+}
+
+/**
  * 对用户消息内容进行 digest。
  * 超过阈值则截断并注明总长度。
  */
 export function digestUserContent(content: string, maxChars: number): string {
   if (content.length <= maxChars) return content;
-  return content.slice(0, maxChars) + `... (${content.length} chars total)`;
+  const end = safeSliceEnd(content, maxChars);
+  return content.slice(0, end) + `... (${content.length} chars total)`;
 }
 
 /**
@@ -78,10 +103,12 @@ export function digestAssistantContent(
   tailChars: number,
 ): string {
   if (content.length <= headChars + tailChars) return content;
+  const headEnd = safeSliceEnd(content, headChars);
+  const tailStart = safeSliceStart(content, content.length - tailChars);
   return (
-    content.slice(0, headChars) +
+    content.slice(0, headEnd) +
     `\n...(omitted, ${content.length} chars total)...\n` +
-    content.slice(-tailChars)
+    content.slice(tailStart)
   );
 }
 

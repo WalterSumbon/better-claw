@@ -518,23 +518,41 @@ skills:
 # ----------------------------------------------------------------------------
 # 语音转文字配置（可选）
 # ----------------------------------------------------------------------------
-# 使用本地 OpenAI Whisper CLI 进行语音转录。
 # 不配置此段时，语音消息仅保存音频文件，由 agent 自行决定如何处理
 # （如通过外部 skill 或 MCP 工具转录）。
-# 前置依赖：需安装 openai-whisper (pip install openai-whisper) 和 ffmpeg。
+#
+# providers 数组构成 fallback 链：按顺序依次尝试，前一个失败自动降级到下一个。
+# 每个 provider 有独立的 type 和配置字段。language 为全局共享。
+#
+# 支持的引擎类型：
+#   - whisper-cli：本地 OpenAI Whisper CLI，需安装 openai-whisper + ffmpeg。
+#   - groq：Groq Cloud Whisper API，极速（通常 < 1 秒），无本地依赖。
+#
+# --- 方案 A：仅本地 Whisper CLI ---
 # speechToText:
-#   # whisper 可执行文件路径。
-#   # 如果已加入 PATH 则直接写 "whisper"，否则写完整路径。
-#   # 默认值："whisper"
-#   whisperPath: "whisper"
+#   providers:
+#     - type: "whisper-cli"
+#       whisperPath: "whisper"          # 可执行文件路径，默认 "whisper"
+#       model: "base"                   # tiny / base / small / medium / large
+#   # language: "zh"                    # 可选，留空自动检测
 #
-#   # whisper 模型名称。模型越大精度越高，但速度越慢、显存占用越大。
-#   # 可选值：tiny, base, small, medium, large
-#   # 默认值："base"
-#   model: "base"
+# --- 方案 B：仅 Groq Cloud API ---
+# speechToText:
+#   providers:
+#     - type: "groq"
+#       apiKey: "gsk_xxxxxxxxxxxxxxxx"
+#       model: "whisper-large-v3-turbo" # 默认值，可省略
+#   # language: "zh"
 #
-#   # 识别语言（可选）。不设置则自动检测语言。
-#   # 常用值：zh（中文）, en（英文）, ja（日文）等。
+# --- 方案 C：Groq 优先 + 本地 Whisper 兜底（推荐） ---
+# speechToText:
+#   providers:
+#     - type: "groq"
+#       apiKey: "gsk_xxxxxxxxxxxxxxxx"
+#       model: "whisper-large-v3-turbo"
+#     - type: "whisper-cli"
+#       whisperPath: "whisper"
+#       model: "base"
 #   # language: "zh"
 
 # ----------------------------------------------------------------------------
