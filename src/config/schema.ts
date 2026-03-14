@@ -205,13 +205,41 @@ const SkillsConfigSchema = z.object({
   ]),
 });
 
-/** 语音转文字配置。 */
-const SpeechToTextConfigSchema = z.object({
-  /** whisper 可执行文件路径。 */
+/** 本地 Whisper CLI 引擎配置。 */
+const WhisperCliProviderSchema = z.object({
+  type: z.literal('whisper-cli'),
+  /** whisper 可执行文件路径。默认 "whisper"。 */
   whisperPath: z.string().default('whisper'),
-  /** whisper 模型名称（如 tiny, base, small, medium, large）。 */
+  /** 模型名称：tiny / base / small / medium / large。默认 "base"。 */
   model: z.string().default('base'),
-  /** 识别语言（如 zh, en, ja），留空则自动检测。 */
+});
+
+/** Groq Cloud Whisper API 引擎配置。 */
+const GroqProviderSchema = z.object({
+  type: z.literal('groq'),
+  /** Groq API Key（必填）。 */
+  apiKey: z.string(),
+  /** 模型名称：whisper-large-v3-turbo / whisper-large-v3 / distil-whisper-large-v3-en。
+   *  默认 "whisper-large-v3-turbo"。 */
+  model: z.string().default('whisper-large-v3-turbo'),
+});
+
+/** 转录引擎配置（discriminated union on "type"）。 */
+const SpeechToTextProviderSchema = z.discriminatedUnion('type', [
+  WhisperCliProviderSchema,
+  GroqProviderSchema,
+]);
+
+/**
+ * 语音转文字配置。
+ *
+ * providers 数组构成 fallback 链：按顺序依次尝试，
+ * 前一个失败自动降级到下一个，全部失败才最终报错。
+ */
+const SpeechToTextConfigSchema = z.object({
+  /** 转录引擎列表（fallback 链），按优先级排列。 */
+  providers: z.array(SpeechToTextProviderSchema).min(1),
+  /** 识别语言（如 zh, en, ja），留空则自动检测。所有引擎共享。 */
   language: z.string().optional(),
 });
 
