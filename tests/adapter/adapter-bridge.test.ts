@@ -452,7 +452,7 @@ describe('AdapterBridge', () => {
       await streamBridge.stop();
     });
 
-    it('should skip complete message after streaming for streaming adapter', async () => {
+    it('should not forward streaming chunk text on final for streaming adapter', async () => {
       const streamAdapter = createMockAdapter('agentelegram');
       (streamAdapter as any).supportsStreaming = true;
       const streamBridge = new AdapterBridge(streamAdapter, bus);
@@ -464,7 +464,7 @@ describe('AdapterBridge', () => {
 
       streamAdapter.sendTextCalls.length = 0;
 
-      // streaming chunk。
+      // streaming chunk — 流式适配器应该收到。
       bus.emit('msg:out', {
         userId: 'user1',
         target: 'agentelegram',
@@ -472,27 +472,77 @@ describe('AdapterBridge', () => {
         streaming: true,
       });
       await flush();
+      expect(streamAdapter.sendTextCalls.length).toBe(1);
 
-      // streaming final（dedup 标记，无文本）。
+      // streaming final（带文本）— 流式适配器不应再次发文本，只 onAgentDone。
       bus.emit('msg:out', {
         userId: 'user1',
         target: 'agentelegram',
+        text: 'full response',
         streaming: true,
         final: true,
       });
       await flush();
+      expect(streamAdapter.sendTextCalls.length).toBe(1); // 不增加
+      expect(streamAdapter.onAgentDoneCalls.length).toBeGreaterThanOrEqual(1);
 
-      const countAfterStreaming = streamAdapter.sendTextCalls.length;
+      await streamBridge.stop();
+    });
 
-      // complete message（应被 dedup 跳过）。
+    it('should send streaming final text to non-streaming adapter', async () => {
+      // 非流式适配器：忽略 chunk，streaming final 有文本时发送。
+      adapter.sendTextCalls.length = 0;
+
+      resolveUserMock.mockReturnValue('user1');
+      await adapter.startHandler!(makeInbound());
+      await flush();
+
+      adapter.sendTextCalls.length = 0;
+
+      // streaming chunk — 非流式适配器忽略。
+      bus.emit('msg:out', {
+        userId: 'user1',
+        target: 'telegram',
+        text: 'partial...',
+        streaming: true,
+      });
+      await flush();
+      expect(adapter.sendTextCalls.length).toBe(0);
+
+      // streaming final 带文本 — 非流式适配器发送。
+      bus.emit('msg:out', {
+        userId: 'user1',
+        target: 'telegram',
+        text: 'full response',
+        streaming: true,
+        final: true,
+      });
+      await flush();
+      expect(adapter.sendTextCalls.length).toBe(1);
+      expect(adapter.sendTextCalls[0].text).toBe('full response');
+    });
+
+    it('should deliver complete messages to all adapters (command/error)', async () => {
+      const streamAdapter = createMockAdapter('agentelegram');
+      (streamAdapter as any).supportsStreaming = true;
+      const streamBridge = new AdapterBridge(streamAdapter, bus);
+      await streamBridge.start();
+
+      resolveUserMock.mockReturnValue('user1');
+      await streamAdapter.startHandler!(makeInbound({ platform: 'agentelegram', platformUserId: 'at_123' }));
+      await flush();
+
+      streamAdapter.sendTextCalls.length = 0;
+
+      // Complete 消息（如 command reply）— 所有适配器都收到。
       bus.emit('msg:out', {
         userId: 'user1',
         target: 'agentelegram',
-        text: 'full response',
+        text: '⏹️ Stopped.',
       });
       await flush();
-
-      expect(streamAdapter.sendTextCalls.length).toBe(countAfterStreaming);
+      expect(streamAdapter.sendTextCalls.length).toBe(1);
+      expect(streamAdapter.sendTextCalls[0].text).toBe('⏹️ Stopped.');
 
       await streamBridge.stop();
     });

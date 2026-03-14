@@ -2,7 +2,7 @@ import { existsSync } from 'fs';
 import { resolve } from 'path';
 import { z } from 'zod';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { agentContext, resolveUserId } from '../core/agent-context.js';
+import { resolveUserId, resolveSendFile, resolveNotifyUser } from '../core/agent-context.js';
 import { getLogger } from '../logger/index.js';
 import { writeRestartMarker } from '../core/restart-marker.js';
 import { getConfig } from '../config/index.js';
@@ -13,8 +13,9 @@ import { getConfig } from '../config/index.js';
  * 通过工厂函数接收 fallbackUserId，避免依赖 AsyncLocalStorage
  * 在 SDK tool call 链路中可能断裂的问题。
  *
- * 注意：sendFile 和 notifyUser 回调仍需从 AsyncLocalStorage 获取，
- * 因为它们是 per-request 的，无法在工厂创建时捕获。
+ * sendFile / notifyUser 回调通过 resolveSendFile / resolveNotifyUser 获取，
+ * 优先从 AsyncLocalStorage 读取，fallback 到 agent-context.ts 中的
+ * per-user callback map（在 agentContext.run() 前注册、结束后清理）。
  *
  * @param fallbackUserId - 工厂创建时捕获的用户 ID（闭包 fallback）。
  */
@@ -33,8 +34,8 @@ After restart, the agent will automatically resume the conversation and notify t
     {},
     async () => {
       const log = getLogger();
-      const store = agentContext.getStore();
-      const userId = store?.userId ?? fallbackUserId;
+      const userId = resolveUserId(fallbackUserId);
+      const notifyUser = resolveNotifyUser(fallbackUserId);
 
       // 检查 agent 是否被允许触发重启。
       if (!getConfig().restart.allowAgent) {
@@ -52,8 +53,8 @@ After restart, the agent will automatically resume the conversation and notify t
       log.info({ userId }, 'Restart requested via MCP tool');
 
       // 向用户推送重启通知（best effort，不等待送达）。
-      if (store?.notifyUser) {
-        store.notifyUser('🔄 Restarting...');
+      if (notifyUser) {
+        notifyUser('🔄 Restarting...');
       }
 
       // marker 已 fsync 落盘，立即发送 SIGTERM。
@@ -89,13 +90,13 @@ Parameters:
     },
     async (args) => {
       const log = getLogger();
-      const store = agentContext.getStore();
-      const userId = store?.userId ?? fallbackUserId;
+      const userId = resolveUserId(fallbackUserId);
+      const sendFile = resolveSendFile(fallbackUserId);
 
-      if (!store?.sendFile) {
+      if (!sendFile) {
         return {
           content: [
-            { type: 'text' as const, text: 'Error: File sending is not available in the current context (AsyncLocalStorage context lost).' },
+            { type: 'text' as const, text: 'Error: File sending is not available in the current context.' },
           ],
         };
       }
@@ -110,7 +111,7 @@ Parameters:
       }
 
       try {
-        await store.sendFile(filePath, {
+        await sendFile(filePath, {
           type: args.type,
           caption: args.caption,
         });

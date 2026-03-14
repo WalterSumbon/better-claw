@@ -6,7 +6,7 @@ import { getConfig } from '../config/index.js';
 import type { AppConfig } from '../config/schema.js';
 import { getLogger } from '../logger/index.js';
 import type { SendFileOptions } from '../adapter/interface.js';
-import { agentContext } from './agent-context.js';
+import { agentContext, setActiveCallbacks, clearActiveCallbacks } from './agent-context.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { createAppMcpServer } from '../mcp/server.js';
 import { readActiveSession, writeActiveSession } from './session-store.js';
@@ -667,7 +667,13 @@ export async function sendToAgent(
   let currentPrompt = message;
   let currentSessionLocalId = activeSession.localId;
 
-  const resultMessage = await agentContext.run({ userId, sendFile, notifyUser }, async () => {
+  // 将 sendFile/notifyUser 回调注册到 per-user fallback map，
+  // 以防 SDK 分发 MCP tool call 时 AsyncLocalStorage 上下文断裂。
+  setActiveCallbacks(userId, sendFile, notifyUser);
+
+  let resultMessage: SDKResultMessage;
+  try {
+  resultMessage = await agentContext.run({ userId, sendFile, notifyUser }, async () => {
     while (true) {
       try {
         try {
@@ -761,6 +767,9 @@ export async function sendToAgent(
       }
     }
   });
+  } finally {
+    clearActiveCallbacks(userId);
+  }
 
   // ── 0-cost zombie 检测 ──
   // 子进程返回 costUsd=0, turns=0, durationMs=0 的 result 说明它根本没成功处理消息

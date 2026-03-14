@@ -6,7 +6,6 @@
  * - 监听 bus 的 msg:out 事件，路由到 adapter 的 sendText/sendFile
  * - 监听 agent:busy/idle，驱动 typing 指示器
  * - 处理用户解析（resolveUser）和 /bind 命令（平台层关注点）
- * - 管理 streaming 去重（避免 streaming final + complete 发两次）
  *
  * @module
  */
@@ -25,13 +24,11 @@ const BROADCAST_SOURCES = new Set(['cron', 'system', 'webhook']);
 
 export class AdapterBridge {
   private bus: EventBus;
-  private adapter: MessageAdapter;
+  /** @internal 仅限模块内访问，shutdown 日志等需要读取适配器名称。 */
+  readonly adapter: MessageAdapter;
 
   /** userId → platformUserId 缓存（来自最近一次入站消息）。 */
   private userPlatformMap = new Map<string, string>();
-
-  /** 跟踪哪些 userId 有活跃的 streaming，用于去重 final complete message。 */
-  private streamedUsers = new Set<string>();
 
   /** typing 刷新定时器（每 4 秒刷新一次 typing 状态）。 */
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
@@ -215,41 +212,32 @@ export class AdapterBridge {
     const platformUserId = this.resolvePlatformUserId(payload.userId);
     if (!platformUserId) return;
 
-    // Streaming 处理逻辑：
-    // BusAgent 会先发 streaming chunks，然后发 streaming final（无文本），最后发 complete。
-    //
-    // 流式适配器（supportsStreaming = true，如 AgentElegram）：
-    //   转发 streaming 文本，跳过最终 complete（dedup）。
-    //
-    // 非流式适配器（Telegram、DingTalk 等）：
-    //   忽略所有 streaming 事件，只发送最终 complete 消息。
+    // Streaming 事件：按适配器类型路由。
     if (payload.streaming) {
       if (this.adapter.supportsStreaming) {
-        this.streamedUsers.add(payload.userId);
-        // 转发 streaming 文本（final 标记不携带文本，仅用于 dedup）。
-        if (payload.text) {
+        // 流式适配器：chunk 转发文本，final 关闭气泡。
+        if (!payload.final && payload.text) {
           await this.adapter.sendText(platformUserId, payload.text).catch((err) => {
             const log = getLogger();
             log.error({ err, platform: this.adapter.platform }, 'Failed to send streaming text');
           });
         }
-        // Mid-turn final：关闭当前流式消息，下一个 streaming text 会开启新气泡。
         if (payload.final && this.adapter.onAgentDone) {
           this.adapter.onAgentDone(platformUserId);
         }
+      } else {
+        // 非流式适配器：只在 final 且有文本时发送完整消息。
+        if (payload.final && payload.text) {
+          await this.adapter.sendText(platformUserId, payload.text).catch((err) => {
+            const log = getLogger();
+            log.error({ err, platform: this.adapter.platform }, 'Failed to send text');
+          });
+        }
       }
-      // 非流式适配器：直接忽略 streaming 事件，等 complete 消息。
       return;
     }
 
-    // 非 streaming 消息（complete）。
-    if (this.streamedUsers.has(payload.userId)) {
-      // 流式适配器已通过 streaming 发送过了，跳过 complete 避免重复。
-      this.streamedUsers.delete(payload.userId);
-      return;
-    }
-
-    // 发送文本。
+    // Complete 消息（command/error/notification 等）：所有适配器都处理。
     if (payload.text) {
       await this.adapter.sendText(platformUserId, payload.text).catch((err) => {
         const log = getLogger();
@@ -257,7 +245,6 @@ export class AdapterBridge {
       });
     }
 
-    // 发送文件。
     if (payload.files) {
       for (const file of payload.files) {
         if (file.path) {

@@ -74,7 +74,7 @@ function makeMsg(text: string, source = 'telegram', userId = 'user1'): MsgInPayl
   return { userId, source, text };
 }
 
-/** 模拟 sendToAgent 的默认行为：返回成功结果，触发一次 onMessage。 */
+/** 模拟 sendToAgent 的默认行为：返回成功结果，触发 assistant + message_stop。 */
 function mockSendToAgentSuccess(responseText = 'Hello!') {
   sendToAgentMock.mockImplementation(
     async (
@@ -82,14 +82,18 @@ function mockSendToAgentSuccess(responseText = 'Hello!') {
       _message: string,
       onMessage: (msg: unknown) => void,
     ) => {
-      // 模拟一次 assistant 消息。
+      // 模拟 assistant 消息。
       onMessage({
         type: 'assistant',
         message: {
           content: [{ type: 'text', text: responseText }],
         },
       });
-      // 返回结果。
+      // 模拟 message_stop（assistant 消息结束信号）。
+      onMessage({
+        type: 'stream_event',
+        event: { type: 'message_stop' },
+      });
       return { type: 'result', subtype: 'success', result: responseText };
     },
   );
@@ -109,6 +113,10 @@ function mockSendToAgentSlow(responseText = 'Done', delayMs = 50) {
         message: {
           content: [{ type: 'text', text: responseText }],
         },
+      });
+      onMessage({
+        type: 'stream_event',
+        event: { type: 'message_stop' },
       });
       return { type: 'result', subtype: 'success', result: responseText };
     },
@@ -169,21 +177,26 @@ describe('BusAgent', () => {
       expect(sendToAgentMock.mock.calls[0][1]).toBe('hello'); // envelope disabled
     });
 
-    it('should emit streaming + complete msg:out events', async () => {
+    it('should emit streaming chunk + streaming final (with text), no post-query complete', async () => {
       mockSendToAgentSuccess('Hi there');
       const msgOut = collectMsgOut(bus);
 
       agent.handleMessage(makeMsg('hello'));
       await flush();
 
-      // 应该有：streaming chunk, streaming final, complete message
-      const streaming = msgOut.filter((m) => m.streaming);
-      const complete = msgOut.filter((m) => !m.streaming);
+      // streaming chunk 带累积文本。
+      const chunks = msgOut.filter((m) => m.streaming && !m.final);
+      expect(chunks.length).toBeGreaterThanOrEqual(1);
+      expect(chunks[0].text).toBe('Hi there');
 
-      expect(streaming.length).toBeGreaterThanOrEqual(1);
-      expect(streaming.some((m) => m.final)).toBe(true);
-      expect(complete.length).toBeGreaterThanOrEqual(1);
-      expect(complete[complete.length - 1].text).toBe('Hi there');
+      // streaming final 带完整文本。
+      const finals = msgOut.filter((m) => m.streaming && m.final);
+      expect(finals.length).toBe(1);
+      expect(finals[0].text).toBe('Hi there');
+
+      // 有流式输出时不发 complete。
+      const complete = msgOut.filter((m) => !m.streaming);
+      expect(complete.length).toBe(0);
     });
 
     it('should emit agent:busy and agent:idle events', async () => {
@@ -445,6 +458,10 @@ describe('BusAgent', () => {
             type: 'assistant',
             message: { content: [{ type: 'text', text: 'resumed!' }] },
           });
+          onMessage({
+            type: 'stream_event',
+            event: { type: 'message_stop' },
+          });
           return { type: 'result', subtype: 'success', result: 'resumed!' };
         },
       );
@@ -455,8 +472,8 @@ describe('BusAgent', () => {
       // 等待 rate limit 恢复（最小 1000ms + 余量）。
       await new Promise((resolve) => setTimeout(resolve, 1300));
 
-      // 应该有恢复后的正常回复。
-      expect(msgOut.some((m) => m.text === 'resumed!' && !m.streaming)).toBe(true);
+      // 应该有恢复后的 streaming final（带完整文本）。
+      expect(msgOut.some((m) => m.text === 'resumed!' && m.streaming && m.final)).toBe(true);
     });
   });
 
