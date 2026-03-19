@@ -156,7 +156,7 @@ async function transcribeWithWhisperCli(
 // Groq provider
 // ---------------------------------------------------------------------------
 
-/** 扩展名 → MIME 类型映射（Groq API 要求正确的 content-type）。 */
+/** 扩展名 → MIME 类型映射。 */
 const AUDIO_MIME: Record<string, string> = {
   '.ogg': 'audio/ogg',
   '.oga': 'audio/ogg',
@@ -166,6 +166,14 @@ const AUDIO_MIME: Record<string, string> = {
   '.wav': 'audio/wav',
   '.webm': 'audio/webm',
   '.flac': 'audio/flac',
+};
+
+/**
+ * Groq API 根据文件扩展名判断格式，不认 .oga（Telegram 语音消息的默认扩展名）。
+ * .oga 实际就是 OGG Opus，映射为 .ogg 即可。
+ */
+const GROQ_EXT_REMAP: Record<string, string> = {
+  '.oga': '.ogg',
 };
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
@@ -186,7 +194,11 @@ async function transcribeWithGroq(
 
   const ext = extname(audioPath).toLowerCase();
   const mimeType = AUDIO_MIME[ext] ?? 'application/octet-stream';
-  const fileName = basename(audioPath);
+  // Groq 按扩展名识别格式，.oga 需映射为 .ogg。
+  const remappedExt = GROQ_EXT_REMAP[ext];
+  const fileName = remappedExt
+    ? basename(audioPath, ext) + remappedExt
+    : basename(audioPath);
 
   try {
     const fileBuffer = readFileSync(audioPath);
