@@ -46,24 +46,20 @@ After restart, the agent will automatically resume the conversation and notify t
         };
       }
 
-      // 写入重启标记，以便服务重启后自动恢复对话。
+      // 写入重启标记（带 fsync 确保落盘），以便服务重启后自动恢复对话。
       writeRestartMarker(userId, 'mcp_tool');
-      log.info({ userId }, 'Restart marker written');
 
       log.info({ userId }, 'Restart requested via MCP tool');
 
-      // 向用户推送重启通知（与手动 /restart 命令行为一致，await 确保消息发出）。
+      // 向用户推送重启通知（best effort，不等待送达）。
       if (store?.notifyUser) {
-        await store.notifyUser('🔄 Restarting...');
+        store.notifyUser('🔄 Restarting...');
       }
 
-      // 延迟退出，确保当前响应能送达用户。外层进程管理器负责重新拉起。
-      setTimeout(() => process.kill(process.pid, 'SIGTERM'), 500);
-      return {
-        content: [
-          { type: 'text' as const, text: 'Service restart scheduled. The process will exit shortly and be restarted by the process manager. A restart marker has been written — the agent will auto-resume the conversation after restart.' },
-        ],
-      };
+      // marker 已 fsync 落盘，立即发送 SIGTERM。
+      // 不再使用 setTimeout 延迟——之前 500ms 的 magic number 既不保证通知送达，
+      // 也让 agent 有机会在中间生成无意义的响应。
+      process.kill(process.pid, 'SIGTERM');
     },
   );
 
