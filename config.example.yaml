@@ -415,6 +415,14 @@ session:
   # 默认值：200
   carryoverAssistantTailChars: 200
 
+  # Carryover 是否包含完整的 tool call 和 tool result。
+  # 启用后每轮 assistant 回复会附带完整的 tool_use（含输入参数）和 tool_result（含执行结果）块，
+  # 帮助新 session 中的模型精确了解之前做了哪些操作及其结果。
+  # 在 mid-query 轮转（agent loop 中途因 context 超限被中断+切换）场景下特别有用。
+  # 注意：完整 tool result 可能较大，会增加 system prompt 体积。
+  # 默认值：false
+  carryoverIncludeToolCalls: false
+
 # ----------------------------------------------------------------------------
 # 重启权限配置
 # ----------------------------------------------------------------------------

@@ -66,9 +66,21 @@
 
 ## P3 - 智能会话管理
 
-**问题**：当前会话轮转只看两个硬指标（4小时超时 / 80% 上下文占用），不够智能。
+**问题**：当前会话轮转只看两个硬指标（4小时超时 / context 占用比例），不够智能。且轮转检查只在用户消息到达时触发，单次长 agent loop 可能在中途就超阈值。
 
-**改进方案**：增加逻辑断点检测和关键信息保护。
+**改进方案**：
+
+### P3.1 - Agent Loop 内实时轮转检查（优先级最高）
+
+**问题**：当前 context ratio 检查仅在 `ensureActiveSession()`（用户消息到达时）执行。一个复杂任务的单次 query 可能从 40% 一路涨到 80%+，中间无轮转机会。
+
+- [x] **Assistant 消息触发点**：在 `for await` 消息循环中，每条 assistant 消息（包括只有 tool_use 没有文本的）更新 `lastInputTokens` 后，用 `lastInputTokens / contextWindowTokens` 计算 ratio，触发 soft/force 两级检查
+- [x] **Soft 阈值**：启动后台准备（summary + consolidate），不中断当前 query
+- [x] **Force 阈值**：调用 `q.interrupt()` 中断当前 query，等待后台完成，执行轮转
+- [x] **Continuation Prompt**：中断+轮转后，自动注入续接 prompt，触发新 session 的 query，模型看到 carryover 后自动继续工作
+- [x] **Carryover Tool Calls（可配置）**：新增 `carryoverIncludeToolCalls` 配置项（默认 false），启用后 carryover 的 assistant 回复会附带完整的 tool_use（含输入参数）和 tool_result（含执行结果）块
+
+### P3.2 - 逻辑断点检测和关键信息保护
 
 - [ ] **话题结束检测**：识别用户的结束语（"好的谢谢"、"OK"、"先这样"等），标记会话为"话题已结束"。下次来消息时倾向于开新会话。
 - [ ] **主动提醒**：当上下文占比较高（如 60-70%）时，在回复末尾温和提示用户可以开新会话
