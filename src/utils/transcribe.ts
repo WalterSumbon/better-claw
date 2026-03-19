@@ -2,9 +2,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, readFileSync, rmSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, basename } from 'path';
+import { join, basename, extname } from 'path';
 import { getConfig } from '../config/index.js';
+import type { AppConfig } from '../config/schema.js';
 import { getLogger } from '../logger/index.js';
+
+/** providers 数组中单个条目的类型。 */
+type ProviderEntry = NonNullable<AppConfig['speechToText']>['providers'][number];
 
 const execFileAsync = promisify(execFile);
 
@@ -17,7 +21,22 @@ export interface TranscribeResult {
 }
 
 // ---------------------------------------------------------------------------
-// 依赖可用性检查（带缓存，进程生命周期内只检查一次）
+// 清理 Whisper 输出中的孤立 UTF-16 代理字符
+// ---------------------------------------------------------------------------
+
+/**
+ * 清理文本中未配对的 UTF-16 代理字符，用 U+FFFD 替代。
+ * Whisper 偶尔输出此类字符，JSON 解析器会拒绝（400 invalid surrogate）。
+ */
+function sanitizeSurrogates(raw: string): string {
+  return raw.replace(
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+    '\uFFFD',
+  );
+}
+
+// ---------------------------------------------------------------------------
+// whisper-cli provider
 // ---------------------------------------------------------------------------
 
 let cachedDepCheck: { available: boolean; reason?: string } | null = null;
@@ -78,13 +97,168 @@ async function checkDependencies(whisperPath: string): Promise<{ available: bool
 }
 
 /**
- * 使用 OpenAI Whisper CLI 将音频文件转录为文本。
+ * 使用本地 OpenAI Whisper CLI 转录音频。
+ */
+async function transcribeWithWhisperCli(
+  audioPath: string,
+  providerConfig: { whisperPath: string; model: string },
+  language?: string,
+): Promise<TranscribeResult> {
+  const log = getLogger();
+
+  const deps = await checkDependencies(providerConfig.whisperPath);
+  if (!deps.available) {
+    return { text: null, unavailableReason: deps.reason };
+  }
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'whisper-'));
+
+  try {
+    const args = [
+      audioPath,
+      '--model', providerConfig.model,
+      '--output_format', 'txt',
+      '--output_dir', tempDir,
+    ];
+    if (language) {
+      args.push('--language', language);
+    }
+
+    await execFileAsync(providerConfig.whisperPath, args, { timeout: 120_000 });
+
+    const baseName = basename(audioPath).replace(/\.[^.]+$/, '');
+    const txtPath = join(tempDir, `${baseName}.txt`);
+    if (!existsSync(txtPath)) {
+      log.error({ txtPath }, 'Whisper output file not found');
+      return { text: null, unavailableReason: 'whisper 执行完成但未生成输出文件' };
+    }
+
+    const rawText = readFileSync(txtPath, 'utf-8').trim();
+    const text = sanitizeSurrogates(rawText);
+
+    if (!text) {
+      log.warn({ audioPath }, 'Whisper returned empty transcription');
+      return { text: null, unavailableReason: 'whisper 转录结果为空' };
+    }
+
+    log.info({ audioPath, textLength: text.length }, 'Audio transcribed (whisper-cli)');
+    return { text };
+  } catch (err) {
+    log.error({ err, audioPath }, 'Audio transcription failed (whisper-cli)');
+    const errMsg = err instanceof Error ? err.message : String(err);
+    return { text: null, unavailableReason: `whisper 转录过程出错: ${errMsg}` };
+  } finally {
+    try { rmSync(tempDir, { recursive: true }); } catch { /* ignore */ }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Groq provider
+// ---------------------------------------------------------------------------
+
+/** 扩展名 → MIME 类型映射（Groq API 要求正确的 content-type）。 */
+const AUDIO_MIME: Record<string, string> = {
+  '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
+  '.mp3': 'audio/mpeg',
+  '.mp4': 'audio/mp4',
+  '.m4a': 'audio/mp4',
+  '.wav': 'audio/wav',
+  '.webm': 'audio/webm',
+  '.flac': 'audio/flac',
+};
+
+const GROQ_API_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
+
+/**
+ * 使用 Groq Cloud Whisper API 转录音频。
  *
- * 流程：输入音频 → whisper 转录 → 返回文本。
- * 需要系统安装 openai-whisper（brew install openai-whisper 或 pip install openai-whisper）。
- * Whisper 内部使用 ffmpeg 处理音频格式，支持 .oga, .ogg, .mp3 等常见格式。
+ * API 兼容 OpenAI /audio/transcriptions 格式：
+ *   POST multipart/form-data { file, model, language? }
+ *   Authorization: Bearer <apiKey>
+ */
+async function transcribeWithGroq(
+  audioPath: string,
+  providerConfig: { apiKey: string; model: string },
+  language?: string,
+): Promise<TranscribeResult> {
+  const log = getLogger();
+
+  const ext = extname(audioPath).toLowerCase();
+  const mimeType = AUDIO_MIME[ext] ?? 'application/octet-stream';
+  const fileName = basename(audioPath);
+
+  try {
+    const fileBuffer = readFileSync(audioPath);
+    const blob = new Blob([fileBuffer], { type: mimeType });
+
+    const form = new FormData();
+    form.append('file', blob, fileName);
+    form.append('model', providerConfig.model);
+    form.append('response_format', 'text');
+    if (language) {
+      form.append('language', language);
+    }
+
+    const response = await fetch(GROQ_API_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${providerConfig.apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      log.error({ status: response.status, body, audioPath }, 'Groq API error');
+      return { text: null, unavailableReason: `Groq API 返回 ${response.status}: ${body}` };
+    }
+
+    const rawText = (await response.text()).trim();
+    const text = sanitizeSurrogates(rawText);
+
+    if (!text) {
+      log.warn({ audioPath }, 'Groq returned empty transcription');
+      return { text: null, unavailableReason: 'Groq 转录结果为空' };
+    }
+
+    log.info({ audioPath, textLength: text.length, model: providerConfig.model }, 'Audio transcribed (groq)');
+    return { text };
+  } catch (err) {
+    log.error({ err, audioPath }, 'Audio transcription failed (groq)');
+    const errMsg = err instanceof Error ? err.message : String(err);
+    return { text: null, unavailableReason: `Groq 转录过程出错: ${errMsg}` };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Provider 路由
+// ---------------------------------------------------------------------------
+
+/** 根据 provider 配置调用对应的转录实现。 */
+function runProvider(
+  provider: ProviderEntry,
+  audioPath: string,
+  language?: string,
+): Promise<TranscribeResult> {
+  switch (provider.type) {
+    case 'groq':
+      return transcribeWithGroq(audioPath, provider, language);
+    case 'whisper-cli':
+      return transcribeWithWhisperCli(audioPath, provider, language);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 统一入口
+// ---------------------------------------------------------------------------
+
+/**
+ * 将音频文件转录为文本。
  *
- * @param audioPath - 输入音频文件路径（支持 .oga, .ogg, .mp3 等 ffmpeg 可处理的格式）。
+ * providers 数组构成 fallback 链：按顺序依次尝试，
+ * 前一个失败自动降级到下一个，全部失败才最终报错。
+ *
+ * @param audioPath - 输入音频文件路径。
  * @returns 转录结果，包含文本和失败原因。
  */
 export async function transcribeAudio(audioPath: string): Promise<TranscribeResult> {
@@ -97,52 +271,23 @@ export async function transcribeAudio(audioPath: string): Promise<TranscribeResu
     return { text: null };
   }
 
-  // 先检查依赖是否可用。
-  const deps = await checkDependencies(sttConfig.whisperPath);
-  if (!deps.available) {
-    return { text: null, unavailableReason: deps.reason };
+  const { providers, language } = sttConfig;
+  const failures: string[] = [];
+
+  for (const provider of providers) {
+    const result = await runProvider(provider, audioPath, language);
+    if (result.text) {
+      return result;
+    }
+    // 记录失败原因，继续尝试下一个 provider。
+    const reason = result.unavailableReason ?? '未知错误';
+    log.warn({ provider: provider.type, reason, audioPath }, 'Provider failed, trying next');
+    failures.push(`[${provider.type}] ${reason}`);
   }
 
-  // 创建临时目录存放 whisper 输出文件。
-  const tempDir = mkdtempSync(join(tmpdir(), 'whisper-'));
-
-  try {
-    // 调用 OpenAI Whisper CLI。
-    const args = [
-      audioPath,
-      '--model', sttConfig.model,
-      '--output_format', 'txt',
-      '--output_dir', tempDir,
-    ];
-    if (sttConfig.language) {
-      args.push('--language', sttConfig.language);
-    }
-
-    await execFileAsync(sttConfig.whisperPath, args, { timeout: 120_000 });
-
-    // OpenAI Whisper 输出文件名为 {原文件名去扩展名}.txt。
-    const baseName = basename(audioPath).replace(/\.[^.]+$/, '');
-    const txtPath = join(tempDir, `${baseName}.txt`);
-    if (!existsSync(txtPath)) {
-      log.error({ txtPath }, 'Whisper output file not found');
-      return { text: null, unavailableReason: 'whisper 执行完成但未生成输出文件' };
-    }
-
-    const text = readFileSync(txtPath, 'utf-8').trim();
-
-    if (!text) {
-      log.warn({ audioPath }, 'Whisper returned empty transcription');
-      return { text: null, unavailableReason: 'whisper 转录结果为空' };
-    }
-
-    log.info({ audioPath, textLength: text.length }, 'Audio transcribed');
-    return { text };
-  } catch (err) {
-    log.error({ err, audioPath }, 'Audio transcription failed');
-    const errMsg = err instanceof Error ? err.message : String(err);
-    return { text: null, unavailableReason: `whisper 转录过程出错: ${errMsg}` };
-  } finally {
-    // 清理临时目录。
-    try { rmSync(tempDir, { recursive: true }); } catch { /* ignore */ }
-  }
+  // 所有 provider 都失败了。
+  return {
+    text: null,
+    unavailableReason: `所有转录引擎均失败:\n${failures.join('\n')}`,
+  };
 }
