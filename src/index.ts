@@ -570,12 +570,25 @@ async function main(): Promise<void> {
 
   // 12. 优雅关闭。
   const shutdown = async () => {
+    const t0 = Date.now();
+    const elapsed = () => `${Date.now() - t0}ms`;
     log.info('Shutting down...');
+    log.info('[shutdown] stopAllJobs start');
     stopAllJobs();
+    log.info({ elapsed: elapsed() }, '[shutdown] stopAllJobs done');
+
+    log.info('[shutdown] stopWebhookServer start');
     await stopWebhookServer();
-    for (const adapter of adapters) {
-      await adapter.stop();
+    log.info({ elapsed: elapsed() }, '[shutdown] stopWebhookServer done');
+
+    for (let i = 0; i < adapters.length; i++) {
+      const name = adapters[i].constructor.name;
+      log.info({ adapter: name }, `[shutdown] adapter[${i}] stop start`);
+      await adapters[i].stop();
+      log.info({ adapter: name, elapsed: elapsed() }, `[shutdown] adapter[${i}] stop done`);
     }
+
+    log.info({ totalElapsed: elapsed() }, '[shutdown] all done, exiting');
     process.exit(0);
   };
 
@@ -584,6 +597,13 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
+  // 尝试用 pino 记录，确保启动阶段的致命错误也写入日志文件。
+  try {
+    const log = getLogger();
+    log.fatal({ err }, 'Fatal error during startup');
+  } catch {
+    // logger 尚未初始化时 fallback 到 stderr。
+  }
   console.error('Fatal error:', err);
   process.exit(1);
 });
