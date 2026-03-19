@@ -86,6 +86,7 @@ const HOT_RELOADABLE_KEYS = [
   'skills',
   'systemPrompt',
   'messageEnvelope',
+  'sdkEnv',
 ] as const;
 
 /** 不可热重载的配置字段列表（需要重启）。 */

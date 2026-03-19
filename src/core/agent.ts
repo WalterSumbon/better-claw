@@ -146,6 +146,10 @@ export function buildSdkEnv(userId: string, config: AppConfig): Record<string, s
   const permissions = resolveUserPermissions(userId);
   if (permissions.isAdmin) {
     const env: Record<string, string | undefined> = { ...process.env };
+    // 注入全局 sdkEnv 配置。
+    for (const [key, value] of Object.entries(config.sdkEnv)) {
+      env[key] = value;
+    }
     if (config.anthropic.apiKey) {
       env.ANTHROPIC_API_KEY = config.anthropic.apiKey;
     }
@@ -169,6 +173,11 @@ export function buildSdkEnv(userId: string, config: AppConfig): Record<string, s
 
   // 追加 envExtra。
   for (const [key, value] of Object.entries(config.permissions.envExtra)) {
+    env[key] = value;
+  }
+
+  // 注入全局 sdkEnv 配置。
+  for (const [key, value] of Object.entries(config.sdkEnv)) {
     env[key] = value;
   }
 
