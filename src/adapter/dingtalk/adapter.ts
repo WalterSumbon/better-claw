@@ -1,5 +1,7 @@
 import { writeFileSync } from 'fs';
 import { basename, extname, join, resolve } from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { DWClient, TOPIC_ROBOT, EventAck } from 'dingtalk-stream-sdk-nodejs';
 import type { DWClientDownStream } from 'dingtalk-stream-sdk-nodejs';
 import type { MessageAdapter, SendFileOptions } from '../interface.js';
@@ -112,6 +114,8 @@ interface DingtalkAdapterOptions {
   oapiBase?: string;
   /** 命令前缀（默认 "."，因为钉钉会拦截 "/" 开头的消息）。 */
   commandPrefix?: string;
+  /** 应用的 AgentId，用于工作通知 API 发送图片等富媒体消息。 */
+  agentId?: string;
 }
 
 /**
@@ -128,6 +132,7 @@ export class DingtalkAdapter implements MessageAdapter {
   private apiBase: string;
   private oapiBase: string;
   readonly commandPrefix: string;
+  private agentId?: string;
 
   /** access token 缓存。 */
   private accessToken = '';
@@ -157,6 +162,7 @@ export class DingtalkAdapter implements MessageAdapter {
     this.apiBase = (options.apiBase ?? 'https://api.dingtalk.com').replace(/\/+$/, '');
     this.oapiBase = (options.oapiBase ?? 'https://oapi.dingtalk.com').replace(/\/+$/, '');
     this.commandPrefix = options.commandPrefix ?? '.';
+    this.agentId = options.agentId;
   }
 
   /**
@@ -834,6 +840,103 @@ export class DingtalkAdapter implements MessageAdapter {
   }
 
   /**
+   * 通过工作通知 API 发送消息。
+   *
+   * 工作通知支持 image/voice/file 等使用 mediaId 的消息类型，
+   * 消息会出现在钉钉「工作通知」频道中。
+   *
+   * @param userId - 用户 userId（即 staffId）。
+   * @param msg - 钉钉消息体（含 msgtype 及对应字段）。
+   */
+  private async sendViaWorkNotification(
+    userId: string,
+    msg: Record<string, unknown>,
+  ): Promise<void> {
+    const log = getLogger();
+    if (!this.agentId) {
+      throw new Error('agentId is required for work notification API');
+    }
+    const token = await this.getAccessToken();
+    const res = await fetch(
+      `${this.oapiBase}/topapi/message/corpconversation/asyncsend_v2?access_token=${encodeURIComponent(token)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: this.agentId,
+          userid_list: userId,
+          msg,
+        }),
+      },
+    );
+
+    if (!res.ok) {
+      const errText = await res.text();
+      log.error({ status: res.status, body: errText, userId }, 'DingTalk work notification send failed');
+      throw new Error(`DingTalk work notification failed: ${res.status}`);
+    }
+
+    const data = await res.json() as { errcode?: number; errmsg?: string; task_id?: number };
+    if (data.errcode && data.errcode !== 0) {
+      log.error({ errcode: data.errcode, errmsg: data.errmsg, userId }, 'DingTalk work notification API error');
+      throw new Error(`DingTalk work notification error: ${data.errcode} ${data.errmsg}`);
+    }
+
+    log.debug({ taskId: data.task_id, userId }, 'DingTalk work notification sent');
+  }
+
+  // ---------------------------------------------------------------------------
+  // 公网图床上传（用于图片内联显示）
+  // ---------------------------------------------------------------------------
+
+  /** catbox.moe 上传 API 端点。 */
+  private static readonly IMAGE_HOST_URL = 'https://catbox.moe/user/api.php';
+
+  /**
+   * 上传图片到公网图床获取 HTTPS URL。
+   *
+   * 使用 catbox.moe 免费图床服务，无需注册即可上传，返回的 HTTPS URL
+   * 可被钉钉服务端访问，用于 Markdown 消息中的图片内联显示。
+   *
+   * 通过 curl 子进程上传以自动继承系统代理配置（HTTP_PROXY 等），
+   * Node.js 原生 fetch 不支持自动代理。
+   *
+   * @param filePath - 本地文件绝对路径。
+   * @returns 公网图片 URL，上传失败时返回 undefined。
+   */
+  private async uploadToImageHost(filePath: string): Promise<string | undefined> {
+    const log = getLogger();
+    const execFileAsync = promisify(execFile);
+
+    try {
+      const { stdout } = await execFileAsync(
+        'curl',
+        [
+          '-s',
+          '--max-time', '30',
+          '-X', 'POST',
+          DingtalkAdapter.IMAGE_HOST_URL,
+          '-F', 'reqtype=fileupload',
+          '-F', `fileToUpload=@${filePath}`,
+        ],
+        { timeout: 35_000 },
+      );
+
+      const url = stdout.trim();
+      if (url.startsWith('https://')) {
+        log.debug({ filePath, url }, 'Image host upload succeeded');
+        return url;
+      }
+
+      log.warn({ response: url, filePath }, 'Image host upload: unexpected response');
+      return undefined;
+    } catch (err) {
+      log.warn({ err, filePath }, 'Image host upload failed');
+      return undefined;
+    }
+  }
+
+  /**
    * 向钉钉用户发送文本消息。
    *
    * 优先使用缓存的 sessionWebhook 回复（更快），回退到 OpenAPI 主动发消息。
@@ -882,15 +985,12 @@ export class DingtalkAdapter implements MessageAdapter {
     const arrayBuffer = fileBytes.buffer.slice(fileBytes.byteOffset, fileBytes.byteOffset + fileBytes.byteLength);
     const blob = new Blob([arrayBuffer]);
     formData.append('media', blob, fileName);
-    formData.append('type', fileType);
 
+    // 使用旧版 OAPI 上传媒体文件接口，type 通过 query 参数传递。
     const res = await fetch(
-      `${this.apiBase}/v1.0/robot/messageFiles/upload?robotCode=${encodeURIComponent(this.robotCode)}`,
+      `${this.oapiBase}/media/upload?access_token=${encodeURIComponent(token)}&type=${encodeURIComponent(fileType)}`,
       {
         method: 'POST',
-        headers: {
-          'x-acs-dingtalk-access-token': token,
-        },
         body: formData,
       },
     );
@@ -901,13 +1001,17 @@ export class DingtalkAdapter implements MessageAdapter {
       throw new Error(`DingTalk upload failed: ${res.status}`);
     }
 
-    const data = await res.json() as { mediaId?: string };
-    if (!data.mediaId) {
-      throw new Error('DingTalk upload: no mediaId in response');
+    const data = await res.json() as { errcode?: number; errmsg?: string; media_id?: string };
+    if (data.errcode && data.errcode !== 0) {
+      log.error({ errcode: data.errcode, errmsg: data.errmsg, filePath }, 'DingTalk media upload API error');
+      throw new Error(`DingTalk upload error: ${data.errcode} ${data.errmsg}`);
+    }
+    if (!data.media_id) {
+      throw new Error('DingTalk upload: no media_id in response');
     }
 
-    log.debug({ mediaId: data.mediaId, fileName }, 'DingTalk media uploaded');
-    return data.mediaId;
+    log.debug({ mediaId: data.media_id, fileName }, 'DingTalk media uploaded');
+    return data.media_id;
   }
 
   /**
@@ -961,19 +1065,28 @@ export class DingtalkAdapter implements MessageAdapter {
     }
 
     try {
-      const mediaId = await this.uploadMedia(filePath, mediaType);
-
-      let msgParam: string;
-      if (msgKey === 'sampleImageMsg') {
-        // 钉钉图片消息通过 mediaId 发送时，使用 sampleFile 更可靠。
-        msgParam = JSON.stringify({ mediaId, fileName, fileType: mediaType });
-        msgKey = 'sampleFile';
-      } else {
-        msgParam = JSON.stringify({ mediaId, fileName, fileType: mediaType });
+      // 图片优先通过公网图床 + Markdown 内联显示。
+      if (mediaType === 'image') {
+        const imageUrl = await this.uploadToImageHost(filePath);
+        if (imageUrl) {
+          const caption = options?.caption ? `\n\n${options.caption}` : '';
+          const markdown = `![${fileName}](${imageUrl})${caption}`;
+          await this.sendViaOpenAPI(
+            platformUserId,
+            'sampleMarkdown',
+            JSON.stringify({ title: options?.caption || '图片', text: markdown }),
+          );
+          log.info({ staffId: platformUserId, fileName, method: 'imageHostMarkdown' }, 'DingTalk image sent via image host');
+          return;
+        }
+        log.warn({ fileName }, 'Image host upload failed, falling back to sampleFile');
       }
 
-      await this.sendViaOpenAPI(platformUserId, msgKey, msgParam);
-      log.info({ staffId: platformUserId, fileName, msgKey }, 'DingTalk file sent');
+      // OSS 不可用或非图片类型：上传到钉钉媒体库，以文件形式发送。
+      const mediaId = await this.uploadMedia(filePath, mediaType);
+      const msgParam = JSON.stringify({ mediaId, fileName, fileType: mediaType });
+      await this.sendViaOpenAPI(platformUserId, 'sampleFile', msgParam);
+      log.info({ staffId: platformUserId, fileName, msgKey: 'sampleFile' }, 'DingTalk file sent');
     } catch (err) {
       log.error({ err, filePath, platformUserId }, 'Failed to send file via DingTalk');
       // 文件发送失败时，发送文本通知。

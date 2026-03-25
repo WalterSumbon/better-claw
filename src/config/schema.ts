@@ -116,6 +116,8 @@ const DingtalkConfigSchema = z.object({
   apiBase: z.string().default('https://api.dingtalk.com'),
   /** 旧版 OAPI 基础地址（用于获取 access token）。标准钉钉为 https://oapi.dingtalk.com。 */
   oapiBase: z.string().default('https://oapi.dingtalk.com'),
+  /** 应用的 AgentId，用于工作通知 API 发送图片等富媒体消息。 */
+  agentId: z.string().optional(),
   /** 命令前缀（默认 "."，因为钉钉会拦截 "/" 开头的消息）。 */
   commandPrefix: z.string().default('.'),
 });
