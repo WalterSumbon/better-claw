@@ -114,8 +114,6 @@ interface DingtalkAdapterOptions {
   oapiBase?: string;
   /** 命令前缀（默认 "."，因为钉钉会拦截 "/" 开头的消息）。 */
   commandPrefix?: string;
-  /** 应用的 AgentId，用于工作通知 API 发送图片等富媒体消息。 */
-  agentId?: string;
 }
 
 /**
@@ -132,8 +130,6 @@ export class DingtalkAdapter implements MessageAdapter {
   private apiBase: string;
   private oapiBase: string;
   readonly commandPrefix: string;
-  private agentId?: string;
-
   /** access token 缓存。 */
   private accessToken = '';
   private tokenExpiresAt = 0;
@@ -162,7 +158,6 @@ export class DingtalkAdapter implements MessageAdapter {
     this.apiBase = (options.apiBase ?? 'https://api.dingtalk.com').replace(/\/+$/, '');
     this.oapiBase = (options.oapiBase ?? 'https://oapi.dingtalk.com').replace(/\/+$/, '');
     this.commandPrefix = options.commandPrefix ?? '.';
-    this.agentId = options.agentId;
   }
 
   /**
@@ -837,52 +832,6 @@ export class DingtalkAdapter implements MessageAdapter {
       log.error({ status: res.status, body: errText, staffId, msgKey }, 'DingTalk OpenAPI send failed');
       throw new Error(`DingTalk send failed: ${res.status}`);
     }
-  }
-
-  /**
-   * 通过工作通知 API 发送消息。
-   *
-   * 工作通知支持 image/voice/file 等使用 mediaId 的消息类型，
-   * 消息会出现在钉钉「工作通知」频道中。
-   *
-   * @param userId - 用户 userId（即 staffId）。
-   * @param msg - 钉钉消息体（含 msgtype 及对应字段）。
-   */
-  private async sendViaWorkNotification(
-    userId: string,
-    msg: Record<string, unknown>,
-  ): Promise<void> {
-    const log = getLogger();
-    if (!this.agentId) {
-      throw new Error('agentId is required for work notification API');
-    }
-    const token = await this.getAccessToken();
-    const res = await fetch(
-      `${this.oapiBase}/topapi/message/corpconversation/asyncsend_v2?access_token=${encodeURIComponent(token)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agent_id: this.agentId,
-          userid_list: userId,
-          msg,
-        }),
-      },
-    );
-
-    if (!res.ok) {
-      const errText = await res.text();
-      log.error({ status: res.status, body: errText, userId }, 'DingTalk work notification send failed');
-      throw new Error(`DingTalk work notification failed: ${res.status}`);
-    }
-
-    const data = await res.json() as { errcode?: number; errmsg?: string; task_id?: number };
-    if (data.errcode && data.errcode !== 0) {
-      log.error({ errcode: data.errcode, errmsg: data.errmsg, userId }, 'DingTalk work notification API error');
-      throw new Error(`DingTalk work notification error: ${data.errcode} ${data.errmsg}`);
-    }
-
-    log.debug({ taskId: data.task_id, userId }, 'DingTalk work notification sent');
   }
 
   // ---------------------------------------------------------------------------
