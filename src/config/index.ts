@@ -81,6 +81,7 @@ const HOT_RELOADABLE_KEYS = [
   'session',
   'restart',
   'messagePush',
+  'messages',
   'speechToText',
   'permissionMode',
   'skills',

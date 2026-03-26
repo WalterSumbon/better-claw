@@ -21,6 +21,7 @@ import { startWebhookServer, stopWebhookServer } from './webhook/server.js';
 import type { WebhookHandler, WebhookNotifyRequest } from './webhook/types.js';
 import { readProfile } from './user/store.js';
 import { resolveTimezone, formatLocalTime, getUtcOffset } from './utils/timezone.js';
+import { renderBindWelcomeMessage, renderUnboundNoticeMessage } from './user/messages.js';
 
 /** 命令元信息。 */
 interface CommandDef {
@@ -147,7 +148,7 @@ async function handleMessage(
           );
           await adapter.sendText(
             msg.platformUserId,
-            `Bound successfully! Welcome, ${profile.name}.`,
+            renderBindWelcomeMessage(profile.name),
           );
         } else {
           await adapter.sendText(msg.platformUserId, 'Invalid token.');
@@ -189,7 +190,7 @@ async function handleMessage(
         if (!userId) {
           await adapter.sendText(
             msg.platformUserId,
-            `I don't recognize you yet. Use ${adapter.commandPrefix}bind <your-token> to link your account.`,
+            renderUnboundNoticeMessage(adapter.commandPrefix),
           );
           return;
         }
@@ -239,7 +240,7 @@ async function handleMessage(
   if (!userId) {
     await adapter.sendText(
       msg.platformUserId,
-      `I don't recognize you yet. Use ${adapter.commandPrefix}bind <your-token> to link your account.`,
+      renderUnboundNoticeMessage(adapter.commandPrefix),
     );
     return;
   }

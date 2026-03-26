@@ -55,6 +55,16 @@ const MessagePushConfigSchema = z.object({
   interactionMode: InteractionModeSchema,
 });
 
+/** 系统消息模板配置。 */
+const MessagesConfigSchema = z.object({
+  /** 用户绑定成功后的欢迎词模板。支持 ${userName} 变量。 */
+  bindWelcome: z.string().default('Bound successfully! Welcome, ${userName}.'),
+  /** 用户未绑定时的提示模板。支持 ${commandPrefix} 变量。 */
+  unboundNotice: z.string().default(
+    "I don't recognize you yet. Use ${commandPrefix}bind <your-token> to link your account.",
+  ),
+});
+
 /** 会话管理配置。 */
 const SessionConfigSchema = z.object({
   /** 时间间隔轮转阈值（小时），超过此间隔自动开新会话。 */
@@ -279,6 +289,11 @@ export const AppConfigSchema = z.object({
   messagePush: MessagePushConfigSchema.default(() => ({
     pushIntermediateMessages: true,
     interactionMode: 'queue' as const,
+  })),
+  /** 系统消息模板配置。 */
+  messages: MessagesConfigSchema.default(() => ({
+    bindWelcome: 'Bound successfully! Welcome, ${userName}.',
+    unboundNotice: "I don't recognize you yet. Use ${commandPrefix}bind <your-token> to link your account.",
   })),
   /** 数据目录路径。 */
   dataDir: z.string().default('data'),

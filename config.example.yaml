@@ -152,6 +152,24 @@ messagePush:
   # 默认值："queue"
   interactionMode: "queue"
 
+# ----------------------------------------------------------------------------
+# 系统消息模板配置
+# ----------------------------------------------------------------------------
+# 控制系统直接发送给用户的固定文案。
+# 支持热重载（修改后新消息立即生效，无需重启）。
+messages:
+  # 用户绑定成功后的欢迎词模板。
+  # 支持变量：
+  #   ${userName}  — 当前绑定用户的显示名称
+  # 默认值："Bound successfully! Welcome, ${userName}."
+  bindWelcome: "Bound successfully! Welcome, ${userName}."
+
+  # 用户尚未绑定账号时的提示模板。
+  # 支持变量：
+  #   ${commandPrefix}  — 当前平台命令前缀
+  # 默认值："I don't recognize you yet. Use ${commandPrefix}bind <your-token> to link your account."
+  unboundNotice: "I don't recognize you yet. Use ${commandPrefix}bind <your-token> to link your account."
+
 
 # ----------------------------------------------------------------------------
 # 数据目录路径

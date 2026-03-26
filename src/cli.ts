@@ -19,6 +19,7 @@ import { getWorkGroups, updateWorkGroups } from './config/index.js';
 import type { WorkGroupConfig } from './config/index.js';
 import type { PlatformType } from './user/types.js';
 import { exportData, importData, hasExistingData } from './data/migrate.js';
+import { renderBindWelcomeMessage, renderUnboundNoticeMessage } from './user/messages.js';
 
 /**
  * 初始化运行环境（配置 + 日志 + 绑定缓存）。
@@ -468,7 +469,7 @@ program
             if (profile) {
               await cliAdapter.sendText(
                 msg.platformUserId,
-                `Bound successfully! Welcome, ${profile.name}.`,
+                renderBindWelcomeMessage(profile.name),
               );
             } else {
               await cliAdapter.sendText(msg.platformUserId, 'Invalid token.');
@@ -492,7 +493,7 @@ program
       if (!userId) {
         await cliAdapter.sendText(
           msg.platformUserId,
-          `I don't recognize you yet. Use ${cliAdapter.commandPrefix}bind <your-token> to link your account.`,
+          renderUnboundNoticeMessage(cliAdapter.commandPrefix),
         );
         return;
       }
