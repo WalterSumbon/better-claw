@@ -317,7 +317,9 @@ export class DingtalkAdapter implements MessageAdapter {
     const uploadDir = join(config.dataDir, 'uploads', userId);
     ensureDir(uploadDir);
 
-    const fileName = `${Date.now()}_${msgId}${ext}`;
+    // msgId 可能包含 Base64 特殊字符（/、+、=），需要替换以避免被当作路径分隔符。
+    const safeMsgId = msgId.replace(/[/+=]/g, '_');
+    const fileName = `${Date.now()}_${safeMsgId}${ext}`;
     const filePath = join(uploadDir, fileName);
 
     const res = await fetch(url);
