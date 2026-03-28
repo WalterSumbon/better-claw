@@ -3,3 +3,5 @@ dist/
 /data/
 *.log
 .DS_Store
+data-dev/
+data-research/
